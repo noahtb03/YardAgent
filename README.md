@@ -78,51 +78,103 @@ and a null reference, with low confidence and an explicit scale assumption.
 The server preserves the returned dimension and area ranges without arithmetic.
 Upload and API failures retain their normal HTTP errors.
 
-Width and length use feet; area uses square feet. The page shows reference
-assumptions, confidence, boundary assumptions, slope, features and limitations.
-The editable area input starts at the range midpoint; edits do not modify the
-original analysis JSON and disappear on reload.
-After analysis, enter a budget in USD and describe what you want. The Modern,
-Cottage, Desert, Tropical and Low-maintenance buttons append style preferences
-to the free-text box. Select **Generate design**. The page posts the original
-analysis, budget, `user_intent` (up to 4000 characters), and any area value to `/design`, then shows
-the layout elements in a table with quantities, positions, and dimensions,
-alongside design notes and warnings. `/design` has no `estimated_cost_usd` field.
-The model honors requested features and style when choosing additions.
+Width and length use feet; area uses square feet. On page 1, enter the photo,
+budget, intent/style and optional known-area override before clicking **Design my
+yard**. The override constrains available area without replacing the analysis.
+`/design` honors `user_intent` and returns no model-generated cost estimate.
+Every existing feature has an `existing_feature_decisions` entry with its exact
+`feature` description, `action` (`keep` or `remove`), and one-line `reason`.
+Missing model decisions default to keep with a warning. Existing assets are never
+new purchases. Removal is conceptual; demolition costs are not included.
+The design prompt aims for a 3 ft walking route, without requiring an aisle around
+every object. Placement uses small buffers: 0.25 ft for trees, 0.15 ft for seating,
+bars, grills and tables, 0.05 ft for lights, and 0.1 ft for other additions. Optional
+buffers relax to zero when the physical footprints fit.
 
-`/design` returns a `warnings` array instead of rejecting a structurally valid
-proposal for site constraints. Budget is guidance during design; comparison is
-deferred until sourcing. Elements are ordered from highest to lowest priority by the model;
-when footprint area is over the available area, the server drops additions from
-the end of that order until they fit. It reports the excess area and every drop.
-Misplaced footprints are moved inside the boundary when possible; oversized
-footprints are dropped rather than shrinking physical retail products. Existing
-features listed as purchases or overlapped by additions are removed with warnings.
+`/design` returns warnings instead of rejecting site constraints. Every new element
+and its quantity remain selected: placement first moves the footprint, then reduces
+it toward a type-specific minimum viable size, then uses the nearest yard edge as
+a last resort. Edge fallbacks explicitly warn about overlaps or boundary overruns.
+Area limits reduce lower-priority footprints; excess area still remaining at minimum
+sizes is reported without deleting items. Existing assets accidentally listed as
+new purchases are still excluded from purchasing; this is separate from placement.
+Footprint reductions are conceptual and do not change verified product dimensions
+or prices. Verify that a compact product is suitable before purchasing.
 Duplicate IDs are renamed. Missing yard dimensions use an explicit planning
 assumption from the available area/dimension (a 20 × 20 ft boundary when none are
 available). Existing bounds outside the yard produce warnings rather than rejection.
 
-The checklist starts with all proposed elements checked. Uncheck unwanted items
-before sourcing. Only checked items are submitted; changing the selection clears
-stale sourcing and rendering results. Warnings carry through `/source` and `/render` inputs. The prompt
+The viewer checklist starts with all proposed elements checked. Unchecking an item
+hides its geometry and removes its costs and collision bounds immediately, without
+another sourcing or Blender request. Rechecking restores it. Click **Update preview**
+to regenerate all three preview stages for the changed selection. Warnings carry through
+`/source` and `/render` inputs. The prompt
 always requests a proposal, favoring fewer or cheaper additions for small yards or
-tight budgets. If all proposed additions must be removed, the response still
-returns a layout with an empty list and explanatory warnings. Malformed API data,
+tight budgets. Placement retains additions even when minimum footprints cannot fit,
+with explicit edge-placement warnings. Malformed API data,
 invalid request types, and service failures retain their normal HTTP errors.
 
-On `/`, upload/analyze a photo, edit the area and budget, enter intent or choose
-styles, generate a design, and check the additions you want. **Confirm selections
-& view yard** sources only those items, saves the enriched layout and original
-analyzed photo in IndexedDB, and navigates to `/view`. The per-tab design survives
-reloads. **Edit selections** restores the inputs and checklist. Reconfirming builds
-a fresh preview. Browser site storage must be enabled; clearing it removes saved designs.
+On `/`, **Design my yard** runs `/analyze` ? `/design` ? `/source`, with stage
+progress and disabled inputs while processing. Failures allow retry. The enriched
+layout, original photo and selections are saved in per-tab IndexedDB, then the
+browser navigates to `/view`. **Edit inputs** restores all inputs and the photo.
+Submitting creates a fresh design. Browser site storage must be enabled.
 
-`/view` shows a three.js scene with OrbitControls and an itemized price/budget
-sidebar, including retailer alternatives, unpriced items, and national feature
-estimates. Drag to rotate, right-drag to pan, scroll/pinch to zoom, or reset the
-camera. Three.js 0.180.0 is vendored under `static/vendor/three` with its MIT license;
-the viewer needs no external CDN. Controls follow the
-[OrbitControls documentation](https://threejs.org/docs/pages/OrbitControls.html).
+Page 2 runs three stages in order:
+
+1. **Before / after:** `/render` edits the original upload with selected sourced
+   products and explicit keep/remove decisions. Both photos stay above the 3D view.
+2. **Reconciliation:** `/reconcile` receives `{analysis, layout, original_photo,
+   redesigned_photo}` (both images are data URLs). The Responses API reads both
+   actual images at temperature 0 with structured output. It reports each selected
+   item's actual type, quantity and individual footprints, and each existing
+   feature's kept/removed/changed/uncertain status and observed bounds. The page
+   shows corrections, observations, confidence, limitations and corrected JSON.
+   Prices and product URLs are joined from the original sourcing records. Missing
+   items leave the layout/totals; mismatched or unexpected items become unpriced.
+   Totals adjust for depicted quantities and installed-feature areas. No new
+   retailer search runs during reconciliation.
+3. **3D:** `/model` receives the corrected layout, `existing_feature_bounds`, and
+   `depicted_instances` (one footprint plus `element_id` per depicted unit).
+   This mode preserves observed footprints and does not invent boundary fences or
+   infer new positions for existing structures. Conflicting image-derived bounds
+   use the same move/shrink/edge pass, logging any difference from the photo. Image-derived
+   positions, sizes and product appearance remain approximate, not a measured scan.
+
+Stages persist after completion. Reconciliation never blocks 3D: transport errors,
+refusals, malformed JSON, or invalid observations return `skipped: true` and the
+unchanged sourced layout. The browser also handles HTTP/network/invalid-response
+failures and proceeds to `/model` without image-derived instances. The page says
+reconciliation was skipped; it does not claim the scene was visually verified.
+Missing/null observation fields inherit the existing layout, including quantities,
+positions and keep/remove decisions. Explicit empty instance lists still mean an
+item was absent. Responses use a strict JSON schema before local validation.
+
+Raw model responses, validation errors (including field paths), and field repairs
+are logged in `.yard-models/reconciliation/<diagnostic_id>.json`. The response
+includes `diagnostic_id`; logs are private, Git-ignored, and contain no uploaded
+image data or API keys. If the model call failed before returning, `raw_response`
+is null and the error is recorded. Diagnostic write failures do not block 3D.
+
+A failed 3D build retains the already-generated photos and reconciliation. Unchecking items
+updates geometry and totals immediately, invalidates the photo/check, and offers
+**Update preview** to rerun render ? reconcile ? model. Selection is disabled while
+these stages run so results cannot be attached to a different item list.
+
+`/view` starts in orbit mode. Walk mode uses a 5.5 ft eye height on supported
+desktop browsers. Click **Walk mode** or the yard to capture the mouse; WASD moves and the mouse looks around.
+**Esc**, **Orbit mode**, or **Reset view** returns to orbit. In orbit, drag to rotate,
+right-drag to pan and scroll/pinch to zoom. Touch devices, unavailable mouse capture,
+invalid movement, or no clear walking space fall back to orbit. Walking uses a
+0.23 m body radius, object/yard collision bounds and substeps to prevent tunneling
+through thin objects. Patios are walkable; pools block movement. There is no jumping
+or swimming. Existing features remain static. The sidebar keeps product links,
+alternatives, unpriced items, national feature ranges and the selected budget total.
+
+Three.js 0.180.0 is vendored under `static/vendor/three` with its MIT license; no
+external CDN is needed. Controls use
+[PointerLockControls](https://threejs.org/docs/pages/PointerLockControls.html) and
+[OrbitControls](https://threejs.org/docs/pages/OrbitControls.html).
 
 `POST /model` takes `{ "analysis": <analysis>, "layout": <sourced layout>,
 "existing_feature_bounds": [] }`. Optional bounds use the same name, X/Y, width
@@ -133,6 +185,22 @@ Only the generated GLB is served at `/models/<job-id>/yard.glb`; scripts and log
 remain private under ignored `.yard-models/`. These local artifacts persist until
 removed by the operator. Blender jobs run one at a time.
 
+Both ordinary and reconciled `/model` calls use `placement.py`. Existing structures
+stay fixed (conflicting static bounds warn). Every addition is retained, including
+all quantity instances. Compact minimum envelopes are defined in
+`placement.MINIMUM_FOOTPRINTS`: for example, chairs 1.8 x 2 ft, bars 4 x 3 ft,
+trees 3 x 3 ft, and lights 0.2 x 0.2 ft. Already smaller footprints are not enlarged
+by the minimum-size rule. Unavoidable edge overlaps remain visible with warnings;
+walk mode can fall back to orbit when no clear walking position exists.
+
+Each adjustment records its action, element ID/instance, old/new position, old/new
+size, and reason. Design logs live in `.yard-models/design-placement/*.json`;
+Blender logs are in each job's `placement.json` and returned as `placement_changes`.
+Warnings are displayed in the viewer. `omitted_element_ids` remains an empty array
+for API compatibility. Prices and selection are never removed by placement.
+`adjusted_layout` contains the final group footprints. Blender audits each composite
+against its envelope, but an explicitly warned edge fallback may overlap another.
+
 Install Blender and put `blender` on PATH, or set `BLENDER_PATH` to its executable.
 Windows installations under `Program Files/Blender Foundation` are also detected:
 
@@ -142,19 +210,48 @@ $env:BLENDER_PATH = 'C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 
 Ground dimensions use the same minimum width/length estimates as design validation.
 Coordinates are near-left group footprints in feet, converted to meters for glTF.
-Quantities are distributed within each footprint: boxes for installed hardscape
-and furniture, cylinders for plants/trees/planters, and small cylinders for lights.
-These are spatial placeholders, not detailed retail product meshes; heights and
-level terrain are illustrative. Existing features are static and carry no purchase
-price. Explicit bounds preserve their placement; otherwise description-based
-positions/sizes are approximate and listed in warnings. Unpriced additions remain
-in the sidebar but are omitted from both previews.
+Quantities are distributed within each footprint. `blender_scene.py` builds fence
+pickets/posts/rails along all four boundaries, tapered tree trunks with branches,
+irregular foliage clusters and individual leaves, hollow tapered planter walls,
+soil and emerging plants, paver tiles with grout, recessed pools with refractive
+water and coping, and path lights with emissive heads. Bars have overhanging tops,
+cabinet doors, foot rails and 2–3 stools; chairs have slatted backs/arms/cushions;
+tables have aprons and legs. Grills include carts, wheels, rounded lids, shelves
+and controls; decks include boards, steps and railings; sheds have pitched roofs,
+doors and windows. Composite envelopes include all these parts.
 
-If Blender fails, times out, or the browser cannot load/display 3D, `/view`
-automatically calls the existing `/render` endpoint and displays its image beside
-the original (stacked on small screens). The sidebar remains available throughout.
-A failed photo render has a retry button. Photo rendering requires at least one
-priced/estimated selected element and the server's `OPENAI_API_KEY`.
+Retail feeds do not yet provide verified product dimensions: human-scale objects
+use explicit typical dimensions (for example, 2.6 × 3 ft chairs and an 8 × 5.5 ft
+bar with a 3.5 ft top), instead of stretching to fill arbitrary allocations. Larger
+site features retain their planned footprints. These dimensions are not manufacturer
+specifications. Reconciled scenes instead use the image-derived individual
+footprints, with approximate heights. Old saved previews run the new three-stage flow.
+
+PBR materials include weathered wood grain, textured bark, rough concrete, painted
+metal and bare steel, plus water transmission/refraction at IOR 1.333. The ground
+has gentle relief, grass texture/bump and broad color variation. Pool openings have
+grass patches that become visible when unchecked. Contextual neighboring lawn and
+instanced distant trees extend beyond the enclosure. A procedural clouded sky,
+distance haze, warm afternoon sun, soft shadows and sky reflection map provide the
+environment. Screen-space ambient occlusion adds contact depth; restrained bloom
+affects bright emissive lights. Optional postprocessing failures retain the lit 3D
+scene. Contextual landscaping is not included in the purchase list.
+
+Repeated parts share Blender meshes and are batched per selectable group into
+[InstancedMesh](https://threejs.org/docs/pages/InstancedMesh.html) objects to reduce
+draw calls. Geometry limits and the Blender timeout fall back to the photo preview.
+These are detailed procedural approximations, not exact manufacturer product meshes;
+heights and gentle terrain relief are illustrative. Existing features carry no
+purchase price. Explicit bounds preserve their placement; otherwise description-based
+positions/sizes are approximate and listed in warnings. Unpriced additions remain
+in the sidebar but are omitted from photo editing. Unexpected or mismatched
+objects observed by reconciliation are represented in 3D without assigning a price.
+
+If Blender fails, times out, or the browser cannot display 3D, the before/after
+and item list remain available. Photo editing requires the original upload and
+server `OPENAI_API_KEY`. Empty selections can still render explicit removals or
+an unchanged yard. Image editing failures have a retry button. Reconciliation
+failures skip the visual check and continue building from the original layout.
 
 `POST /render` accepts JSON with `analysis` (the `/analyze` response), `layout`
 (the enriched `/source` response), and required `original_photo` (the original
@@ -164,7 +261,7 @@ the current analysis and sends that exact file for editing. It returns `image_ur
 `photo_description`: visible scene, viewpoint, background, surfaces, colors, and
 lighting. Older analysis JSON without that field falls back to its existing-feature
 and slope descriptions. The prompt uses each sourced product's actual name,
-quantity, X/Y position, and group footprint, preserving existing site features.
+quantity, X/Y position, and group footprint, preserving features marked keep.
 Selected estimated installed features use their layout descriptions. Unpriced
 retail items are excluded from rendering. The editing prompt requires exact
 product type and quantity with no extra additions: four stake lights cannot be
@@ -184,20 +281,21 @@ The server validates the upload (10 MiB maximum), corrects EXIF orientation, and
 normalizes it to JPEG up to 2048 pixels per side in memory before sending it to
 the editing API. Missing photos return 422, invalid images return 400, and oversized
 decoded images return 413. The prompt preserves the original camera view and keeps
-the deck, fence, shed, garden beds and other structures in their original positions,
-adding only new layout elements. Existing structures take precedence over conflicting
+the deck, fence, shed, garden beds and other structures in their original positions
+unless explicitly marked remove. It adds only selected layout elements.
+Retained structures take precedence over conflicting
 additions. This is a generative edit, not a guarantee of pixel-exact preservation;
 review the result for unintended changes. The original stays in browser memory
 for comparison; generated images are returned directly and not saved on the server.
-Both disappear on page reload.
+Both persist in the tab's IndexedDB design across reloads.
 
-Existing features are retained site constraints, not purchases. The design prompt
+Existing features are site constraints with explicit keep/remove decisions, not purchases. The design prompt
 excludes them from new elements and costs, and validation removes named duplicates
 such as an existing shed with warnings. Descriptive locations still require measured bounds to
 verify clearances; free-text feature matching is conservative, not a complete
 semantic inventory.
 
-Select **Confirm selections & view yard** after choosing items. `POST /source` accepts
+The **Design my yard** pipeline sources proposed items automatically. `POST /source` accepts
 `{"layout": <design with only checked elements>, "budget": <USD number>}`
 (up to 50 elements, with unique IDs). Retailer
 searches use the browser; product-match confirmation requires `OPENAI_API_KEY`

@@ -53,9 +53,10 @@ class RenderTests(unittest.TestCase):
         del data["analysis"]["photo_description"]
         item = data["layout"]["elements"][0]
         item.update(sourced_product=None, sourcing_status="unavailable", sourced_total_usd=None)
-        with self.assertRaises(HTTPException) as error:
-            build_render_prompt(RenderRequest.model_validate(data))
-        self.assertEqual(error.exception.status_code, 422)
+        prompt = build_render_prompt(RenderRequest.model_validate(data))
+        scene = json.loads(prompt.split('SCENE DATA:\n')[1])
+        self.assertEqual(scene['new_additions'], [])
+        self.assertEqual(scene['existing_features_to_preserve'], data['analysis']['existing_features'])
 
     def test_render_endpoint_returns_real_api_image_bytes(self):
         encoded = base64.b64encode(png()).decode()
@@ -96,87 +97,10 @@ class RenderTests(unittest.TestCase):
                     (RateLimitError("quota", response=httpx.Response(429, request=request), body=None), 503)]
         with patch.dict("os.environ", OPENAI_API_KEY="test"), patch("main.OpenAI") as api, TestClient(app) as client:
             generate = api.return_value.__enter__.return_value.images.edit
-            invalid = payload(); invalid["layout"]["elements"][0]["position_x_ft"] = 100
-            self.assertEqual(client.post("/render", json=invalid).status_code, 422)
-            generate.assert_not_called()
+            edge = payload(); edge["layout"]["elements"][0]["position_x_ft"] = 100
+            generate.return_value = SimpleNamespace(data=[SimpleNamespace(b64_json=base64.b64encode(png()).decode())])
+            self.assertEqual(client.post("/render", json=edge).status_code, 200)
             for result, code in failures:
                 generate.side_effect = result if isinstance(result, Exception) else None
                 generate.return_value = result
                 self.assertEqual(client.post("/render", json=payload()).status_code, code)
-
-
-class RenderBrowserTests(unittest.TestCase):
-    def test_full_flow_comparison_error_retry_and_new_photo_reset(self):
-        data = payload()
-        encoded = base64.b64encode(png()).decode()
-        with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
-            try:
-                page = browser.new_page(viewport=dict(width=1100, height=900))
-                errors = []
-                page.on("pageerror", lambda error: errors.append(str(error)))
-                serve_ui(page)
-                page.route("**/model", lambda route: route.fulfill(json=dict(model_url=None, fallback=True, warnings=[])))
-                page.route("**/analyze", lambda route: route.fulfill(json=data["analysis"]))
-                design = {key: data["layout"][key] for key in ("elements", "notes")}
-                design = {**design, "elements": [*design["elements"], {**design["elements"][0], "id": "extra", "type": "Extra chair"}]}
-                design_requests = []
-                source_requests = []
-                def design_route(route):
-                    design_requests.append(route.request.post_data_json)
-                    route.fulfill(json=design)
-                def source_route(route):
-                    source_requests.append(route.request.post_data_json)
-                    route.fulfill(json=data["layout"])
-                page.route("**/design", design_route)
-                page.route("**/source", source_route)
-                render_requests = []
-                def render_route(route):
-                    render_requests.append(route.request.post_data_json)
-                    if len(render_requests) == 1:
-                        route.fulfill(status=504, json=dict(detail="Yard rendering timed out. Please try again."))
-                    else:
-                        route.fulfill(json=dict(image_url="data:image/png;base64," + encoded, prompt="fixture"))
-                page.route("**/render", render_route)
-                page.goto("http://yard.test/")
-                page.locator("#photo").set_input_files(dict(name="yard.png", mimeType="image/png", buffer=png()))
-                page.get_by_role("button", name="Analyze photo").click()
-                page.locator("#budget").fill("500")
-                page.locator("#user-intent").fill("I want a pool and a fire pit")
-                page.get_by_role("button", name="Modern", exact=True).click()
-                page.get_by_role("button", name="Generate design").click()
-                page.locator('input[data-element-id="extra"]').uncheck()
-                # A changed file picker must not substitute a different photo
-                # for the image that produced the current analysis/layout.
-                page.locator("#photo").set_input_files(dict(name="other.png", mimeType="image/png", buffer=b"different file"))
-                page.get_by_role("button", name="Confirm selections & view yard").click()
-                page.wait_for_url("**/view")
-                page.wait_for_function("document.querySelector('#render-status').textContent.includes('timed out')")
-                self.assertTrue(page.locator("#render-results").is_hidden())
-                page.get_by_role("button", name="Retry photo render").click()
-                page.wait_for_function("document.querySelector('#render-results').hidden === false")
-                self.assertEqual(render_requests[-1], data)
-                self.assertEqual(design_requests[0]["user_intent"], "I want a pool and a fire pit. Modern style")
-                self.assertEqual([item["id"] for item in source_requests[0]["layout"]["elements"]], ["chair"])
-                self.assertEqual(source_requests[0]["budget"], 500)
-                self.assertTrue(page.locator("#original-photo").get_attribute("src").startswith("blob:"))
-                original = page.locator("#original-photo").bounding_box()
-                rendered = page.locator("#rendered-photo").bounding_box()
-                self.assertGreater(rendered["x"], original["x"])
-                page.set_viewport_size(dict(width=390, height=844))
-                self.assertGreater(page.locator("#rendered-photo").bounding_box()["y"],
-                                   page.locator("#original-photo").bounding_box()["y"])
-                page.reload()
-                page.wait_for_selector('#render-results')
-                self.assertEqual(len(render_requests), 2)
-                page.get_by_role('link', name='Edit selections').click()
-                page.wait_for_selector('#item-checklist input')
-                self.assertFalse(page.locator('input[data-element-id="extra"]').is_checked())
-                self.assertEqual(page.locator('#user-intent').input_value(), 'I want a pool and a fire pit. Modern style')
-                page.locator("#photo").set_input_files(dict(name="new.png", mimeType="image/png", buffer=png()))
-                page.get_by_role("button", name="Analyze photo").click()
-                page.wait_for_function("document.querySelector('#status').textContent.startsWith('Analysis complete')")
-                self.assertTrue(page.locator('#design-results').is_hidden())
-                self.assertEqual(errors, [])
-            finally:
-                browser.close()

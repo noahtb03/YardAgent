@@ -15,32 +15,52 @@
     button:disabled { opacity: .5; cursor: wait; } .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     figure { margin: 12px 0; } img { max-width: 100%; border-radius: 8px; } [hidden] { display: none !important; }
     .small { font-size: .88rem; } #project-total { font-weight: bold; }
+    .excluded { opacity: .55; } #sourced-items label { display: block; font-weight: 600; margin-bottom: 6px; }
+    #sourced-items input { width: 18px; height: 18px; } #walk-status { min-height: 1.5em; } #mode-toggle { margin-right: 8px; }
     @media (max-width: 850px) { main { grid-template-columns: 1fr; padding: 0 16px 24px; } #scene { height: 55vh; } }
     @media (max-width: 520px) { .comparison { grid-template-columns: 1fr; } }
   </style>
   <script type="importmap">{"imports":{"three":"/static/vendor/three/three.module.js","three/addons/":"/static/vendor/three/addons/"}}</script>
 </head>
 <body>
-  <header><a href="/">← Edit selections</a><h1>Your redesigned yard</h1></header>
+  <header><a href="/">← Edit inputs</a><h1>Your redesigned yard</h1></header>
   <main>
     <section aria-label="Yard preview">
       <p id="view-status" role="status">Loading your design…</p>
-      <div id="scene" hidden aria-label="Interactive 3D yard"></div>
-      <div id="scene-controls" hidden><p>Drag to rotate · Right-drag to pan · Scroll or pinch to zoom</p><button id="reset-camera">Reset view</button></div>
-      <ul id="scene-warnings"></ul>
-      <section id="fallback" hidden>
-        <h2>Photo preview</h2>
-        <p id="render-status" role="status"></p>
-        <button id="render-yard" type="button">Retry photo render</button>
-        <p class="small">AI-edited concept using your original photo. Review for unintended changes.</p>
+      <section id="before-after" data-stage="render" data-state="waiting">
+        <h2>1. Before / after</h2>
+        <p id="render-status" role="status">Waiting</p>
+        <button id="render-yard" type="button" hidden>Retry preview</button>
+        <p class="small">AI-edited concept using your original photo and selected products.</p>
         <div class="comparison">
           <figure><figcaption>Original photo</figcaption><img id="original-photo" alt="Original uploaded yard"></figure>
-          <figure id="render-results" hidden><figcaption>Redesigned yard</figcaption><img id="rendered-photo" alt="AI-generated concept of the redesigned yard"></figure>
+          <figure id="render-results" hidden><figcaption>Redesigned yard</figcaption><img id="rendered-photo" alt="AI-edited redesigned yard"></figure>
         </div>
+      </section>
+      <section id="reconciliation" data-stage="reconcile" data-state="waiting">
+        <h2>2. Reconciliation</h2>
+        <p id="reconcile-status" role="status">Waiting for the redesigned photo.</p>
+        <ul id="corrections"></ul>
+        <details id="corrected-data" hidden><summary>Corrected layout JSON</summary><pre id="corrected-json" style="overflow:auto;max-height:300px"></pre></details>
+      </section>
+      <section id="model-stage" data-stage="model" data-state="waiting">
+      <h2>3. 3D walkthrough</h2>
+      <p id="model-status" role="status">Waiting for reconciliation.</p>
+      <div id="scene" hidden aria-label="Interactive 3D yard"></div>
+      <div id="scene-controls" hidden>
+        <p id="walk-status" role="status">Walk: click to capture the mouse, WASD to move, Esc to return to orbit.</p>
+        <button id="mode-toggle" type="button">Walk mode</button><button id="reset-camera">Reset view</button>
+        <p class="small">Orbit: drag to rotate · Right-drag to pan · Scroll or pinch to zoom</p>
+      </div>
+      <ul id="scene-warnings"></ul>
+      <section id="fallback" hidden>
+        <p>3D preview unavailable. The before/after photo and item list remain available above.</p>
+      </section>
       </section>
     </section>
     <aside id="source-totals" hidden aria-label="Selected items and budget">
       <h2>Items & budget</h2>
+      <p>Uncheck an addition to remove it from the scene and totals. Then update the preview to regenerate the photo, reconciliation and walkthrough.</p>
       <p id="materials-total"></p><p id="features-total"></p><p id="project-total"></p><p id="budget-note"></p>
       <p class="small">Prices × selected quantities assume one retail unit per item. Check pack sizes and coverage. Tax, delivery and retail installation excluded. Feature ranges use U.S. national allowances.</p>
       <ul id="sourced-items"></ul><ul id="layout-notes"></ul>

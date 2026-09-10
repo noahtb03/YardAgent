@@ -1,4 +1,4 @@
-export function showPrices(data, state) {
+export function showPrices(data, state, selectedIds = null, onChange = null) {
 const money = value => Number(value).toLocaleString('en-US', { style: 'currency', currency: 'USD' });
         document.querySelector('#materials-total').textContent =
           `Sourced materials${data.sourcing_complete ? '' : ' (partial)'}: ${money(data.sourced_materials_total_usd)}`;
@@ -11,9 +11,18 @@ const money = value => Number(value).toLocaleString('en-US', { style: 'currency'
         document.querySelector('#budget-note').textContent = data.budget_note || '';
         const items = document.querySelector('#sourced-items');
         items.replaceChildren();
-        for (const element of data.elements) {
+        for (const element of (selectedIds ? state.layout.elements : data.elements)) {
           const item = document.createElement('li');
-          item.textContent = `${element.type} × ${element.quantity}: `;
+          if (selectedIds) {
+            const label = document.createElement('label');
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox'; checkbox.checked = selectedIds.has(element.id);
+            checkbox.dataset.elementId = element.id;
+            checkbox.addEventListener('change', () => onChange(element.id, checkbox.checked));
+            label.append(checkbox, ` ${element.type} × ${element.quantity}: `);
+            item.append(label);
+            item.classList.toggle('excluded', !checkbox.checked);
+          } else item.textContent = `${element.type} × ${element.quantity}: `;
           if (element.sourced_product) {
             const product = element.sourced_product;
             const link = document.createElement('a');

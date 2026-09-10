@@ -33,32 +33,32 @@ class DesignWarningTests(unittest.TestCase):
         self.assertNotIn("estimated_cost_usd", response.json())
         self.assertFalse(any("budget" in warning for warning in response.json()["warnings"]))
 
-    def test_area_drops_lowest_priority_and_preserves_original(self):
+    def test_area_reduces_footprints_and_preserves_all_elements(self):
         original = layout(item("Rose"), item("Fern", x=5))
         result = validate_layout(original, request())
-        self.assertEqual([item.id for item in result.elements], ["Rose"])
+        self.assertEqual([item.id for item in result.elements], ["Rose", "Fern"])
         self.assertEqual(len(original.elements), 2)
-        self.assertTrue(any("lowest-priority" in warning and "Fern" in warning for warning in result.warnings))
+        self.assertLess(result.elements[1].width_ft,original.elements[1].width_ft)
         self.assertTrue(any("by 7 sq ft" in warning for warning in result.warnings))
 
-    def test_out_of_bounds_moves_or_drops_without_shrinking_products(self):
+    def test_out_of_bounds_moves_or_shrinks_and_never_drops(self):
         result = validate_layout(layout(item("Rose", x=9), item("Tree", width=12)), request())
-        self.assertEqual(len(result.elements), 1)
-        self.assertEqual(result.elements[0].position_x_ft, 6)
+        self.assertEqual(len(result.elements), 2)
+        self.assertLessEqual(result.elements[0].position_x_ft + result.elements[0].width_ft, 10)
         self.assertEqual(result.elements[0].width_ft, 4)
-        self.assertTrue(any("Dropped 'Tree'" in warning for warning in result.warnings))
+        self.assertTrue(any("resize" in warning for warning in result.warnings))
 
     def test_existing_bounds_outside_yard_and_overlap_are_warnings(self):
         data = request().model_dump()
         data["existing_feature_bounds"] = [dict(name="Shed", position_x_ft=0, position_y_ft=0, width_ft=12, length_ft=4)]
         result = validate_layout(layout(item("Rose")), DesignRequest.model_validate(data))
-        self.assertEqual(result.elements, [])
+        self.assertEqual(len(result.elements), 1)
         self.assertTrue(any("bounds remain reserved" in warning for warning in result.warnings))
 
     def test_missing_dimensions_and_duplicate_ids_do_not_block(self):
         data = request().model_dump()
         data["analysis"]["width_ft"] = None
         data["area_sq_ft"] = 100
-        result = validate_layout(layout(item("Rose"), item("Rose", x=5)), DesignRequest.model_validate(data))
+        result = validate_layout(layout(item("Rose", width=3, length=3), item("Rose", width=3, length=3, x=6)), DesignRequest.model_validate(data))
         self.assertEqual([item.id for item in result.elements], ["Rose", "Rose-2"])
         self.assertTrue(any("Missing yard dimensions" in warning for warning in result.warnings))
