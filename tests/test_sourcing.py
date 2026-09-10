@@ -1,3 +1,4 @@
+from browser_helpers import saved_view
 """Deterministic sourcing and browser checks; retailer/API responses are fixtures."""
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -178,17 +179,11 @@ class BrowserTests(unittest.TestCase):
         original = layout(element("Patio", "hardscape"))
         enriched = source_layout(original)
         try:
-            page.route("http://yard.test/", lambda route: route.fulfill(
-                content_type="text/html", body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
-            page.route("**/source", lambda route: route.fulfill(json=enriched))
-            page.goto("http://yard.test/")
-            page.evaluate("value => { layout = value; designResults.hidden = false; document.querySelector('#budget').value = 1000; }", original)
-            page.get_by_role("button", name="Source products").click()
-            page.wait_for_function("document.querySelector('#source-totals').hidden === false")
+            saved_view(page, enriched)
             self.assertIn("$160.00–$500.00", page.locator("#features-total").inner_text())
             self.assertIn("$0.00", page.locator("#materials-total").inner_text())
-            page.get_by_role("button", name="Source products").click()
-            page.wait_for_function("document.querySelector('#source-products').disabled === false")
+            page.reload()
+            page.wait_for_selector('#source-totals')
             self.assertEqual(page.locator("#sourced-items li").count(), 1)
             self.assertEqual(errors, [])
         finally:
@@ -202,13 +197,7 @@ class BrowserTests(unittest.TestCase):
         with patch("sourcing.search_all_retailers", return_value={"Adirondack chair": [product, alternative]}):
             enriched = source_layout(original)
         try:
-            page.route("http://yard.test/", lambda route: route.fulfill(content_type="text/html",
-                body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
-            page.route("**/source", lambda route: route.fulfill(json=enriched))
-            page.goto("http://yard.test/")
-            page.evaluate("value => { layout = value; designResults.hidden = false; document.querySelector('#budget').value = 1000; }", original)
-            page.get_by_role("button", name="Source products").click()
-            page.wait_for_function("document.querySelector('#source-totals').hidden === false")
+            saved_view(page, enriched)
             self.assertIn("Amazon: $50.00", page.locator("#sourced-items").inner_text())
             page.get_by_text("See 1 alternatives").click()
             self.assertIn("Wayfair: $70.00", page.locator("#sourced-items details").inner_text())

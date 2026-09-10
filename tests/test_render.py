@@ -14,6 +14,7 @@ from openai import APITimeoutError, RateLimitError
 from PIL import Image
 from playwright.sync_api import sync_playwright
 
+from browser_helpers import serve_ui
 from main import app, RenderRequest, build_render_prompt
 
 
@@ -114,8 +115,8 @@ class RenderBrowserTests(unittest.TestCase):
                 page = browser.new_page(viewport=dict(width=1100, height=900))
                 errors = []
                 page.on("pageerror", lambda error: errors.append(str(error)))
-                page.route("http://yard.test/", lambda route: route.fulfill(content_type="text/html",
-                    body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
+                serve_ui(page)
+                page.route("**/model", lambda route: route.fulfill(json=dict(model_url=None, fallback=True, warnings=[])))
                 page.route("**/analyze", lambda route: route.fulfill(json=data["analysis"]))
                 design = {key: data["layout"][key] for key in ("elements", "notes")}
                 design = {**design, "elements": [*design["elements"], {**design["elements"][0], "id": "extra", "type": "Extra chair"}]}
@@ -145,14 +146,14 @@ class RenderBrowserTests(unittest.TestCase):
                 page.get_by_role("button", name="Modern", exact=True).click()
                 page.get_by_role("button", name="Generate design").click()
                 page.locator('input[data-element-id="extra"]').uncheck()
-                page.get_by_role("button", name="Source products").click()
                 # A changed file picker must not substitute a different photo
                 # for the image that produced the current analysis/layout.
                 page.locator("#photo").set_input_files(dict(name="other.png", mimeType="image/png", buffer=b"different file"))
-                page.get_by_role("button", name="Render redesigned yard").click()
+                page.get_by_role("button", name="Confirm selections & view yard").click()
+                page.wait_for_url("**/view")
                 page.wait_for_function("document.querySelector('#render-status').textContent.includes('timed out')")
                 self.assertTrue(page.locator("#render-results").is_hidden())
-                page.get_by_role("button", name="Render redesigned yard").click()
+                page.get_by_role("button", name="Retry photo render").click()
                 page.wait_for_function("document.querySelector('#render-results').hidden === false")
                 self.assertEqual(render_requests[-1], data)
                 self.assertEqual(design_requests[0]["user_intent"], "I want a pool and a fire pit. Modern style")
@@ -165,9 +166,17 @@ class RenderBrowserTests(unittest.TestCase):
                 page.set_viewport_size(dict(width=390, height=844))
                 self.assertGreater(page.locator("#rendered-photo").bounding_box()["y"],
                                    page.locator("#original-photo").bounding_box()["y"])
+                page.reload()
+                page.wait_for_selector('#render-results')
+                self.assertEqual(len(render_requests), 2)
+                page.get_by_role('link', name='Edit selections').click()
+                page.wait_for_selector('#item-checklist input')
+                self.assertFalse(page.locator('input[data-element-id="extra"]').is_checked())
+                self.assertEqual(page.locator('#user-intent').input_value(), 'I want a pool and a fire pit. Modern style')
+                page.locator("#photo").set_input_files(dict(name="new.png", mimeType="image/png", buffer=png()))
                 page.get_by_role("button", name="Analyze photo").click()
-                self.assertTrue(page.locator("#render-results").is_hidden())
-                self.assertIsNone(page.locator("#rendered-photo").get_attribute("src"))
+                page.wait_for_function("document.querySelector('#status').textContent.startsWith('Analysis complete')")
+                self.assertTrue(page.locator('#design-results').is_hidden())
                 self.assertEqual(errors, [])
             finally:
                 browser.close()

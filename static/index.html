@@ -31,7 +31,7 @@
   </style>
 </head>
 <body>
-  <h1>Photo analysis</h1>
+  <h1>Plan your yard</h1>
   <p>Upload a yard photo to estimate its dimensions, slope, and existing features. Include a familiar object such as a door or fence panel for scale. Your photo is sent to OpenAI for analysis.</p>
   <form id="upload-form" action="/analyze" method="post" enctype="multipart/form-data">
     <label for="photo">Choose a photo (up to 10 MiB)</label>
@@ -79,26 +79,8 @@
       <p>Uncheck any additions you don’t want.</p>
       <div id="item-checklist"></div>
     </fieldset>
-    <button id="source-products" type="button">Source products</button>
+    <button id="source-products" type="button">Confirm selections & view yard</button>
     <p id="source-status" role="status" aria-live="polite"></p>
-    <div id="source-totals" hidden>
-      <p id="materials-total"></p>
-      <p id="features-total"></p>
-      <p id="project-total"></p>
-      <p id="budget-note"></p>
-      <p>Product totals use the listed price × layout quantity, assuming one retail unit per item. Check pack sizes and material coverage. Tax, delivery, and retail installation are excluded. Feature ranges use U.S. national planning allowances; regional questions can be added later.</p>
-      <ul id="sourced-items"></ul>
-      <button id="render-yard" type="button" disabled>Render redesigned yard</button>
-    </div>
-    <p id="render-status" role="status" aria-live="polite"></p>
-    <section id="render-results" aria-labelledby="render-title" hidden>
-      <h3 id="render-title">Your yard, redesigned</h3>
-      <p>AI-edited concept using your original photo and layout. Existing structures are preserved in the editing instructions; review the image for unintended changes.</p>
-      <div class="comparison">
-        <figure><figcaption>Original photo</figcaption><img id="original-photo" alt="Original uploaded yard"></figure>
-        <figure><figcaption>Redesigned yard</figcaption><img id="rendered-photo" alt="AI-generated concept of the redesigned yard"></figure>
-      </div>
-    </section>
     <p>Positions are in feet from the near-left corner of the photo: X runs right and Y runs toward the far boundary. Dimensions cover the whole group of items.</p>
     <div class="table-scroll">
       <table>
@@ -117,7 +99,8 @@
       <ul id="design-warnings"></ul>
     </div>
   </section>
-  <script>
+  <script type="module">
+    import { yardState } from "/static/storage.js";
     const form = document.querySelector('#upload-form');
     const button = document.querySelector('#submit');
     const status = document.querySelector('#status');
@@ -139,25 +122,9 @@
         intent.value = intent.value.slice(0, 4000);
       });
     });
-    let sourcedLayout = null;
-    let originalPhotoUrl = null;
     let originalPhotoFile = null;
-    const renderButton = document.querySelector('#render-yard');
-    const renderStatus = document.querySelector('#render-status');
-    const renderResults = document.querySelector('#render-results');
-    const originalPhoto = document.querySelector('#original-photo');
-    const renderedPhoto = document.querySelector('#rendered-photo');
-    function resetRender() {
-      sourcedLayout = null;
-      renderButton.disabled = true;
-      renderResults.hidden = true;
-      renderedPhoto.removeAttribute('src');
-      renderStatus.textContent = '';
-    }
     const sourceButton = document.querySelector('#source-products');
     const sourceStatus = document.querySelector('#source-status');
-    const sourceTotals = document.querySelector('#source-totals');
-    const money = value => value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     const formatRange = (range, unit) => range
       ? `${range.min.toLocaleString()}–${range.max.toLocaleString()} ${unit}`
       : 'Cannot estimate from this photo';
@@ -166,12 +133,7 @@
       if (button.disabled) return;
       analysis = null;
       layout = null;
-      resetRender();
-      if (originalPhotoUrl) URL.revokeObjectURL(originalPhotoUrl);
-      originalPhotoUrl = null;
       originalPhotoFile = null;
-      originalPhoto.removeAttribute('src');
-      sourceTotals.hidden = true;
       sourceStatus.textContent = '';
       designForm.hidden = true;
       designResults.hidden = true;
@@ -219,9 +181,7 @@
         output.textContent = JSON.stringify(data, null, 2);
         output.hidden = false;
         analysis = data;
-        originalPhotoUrl = URL.createObjectURL(file);
         originalPhotoFile = file;
-        originalPhoto.src = originalPhotoUrl;
         designForm.hidden = false;
         designButton.disabled = !data.width_ft || !data.length_ft;
         if (designButton.disabled) {
@@ -256,8 +216,6 @@
       designResults.hidden = true;
       designStatus.textContent = 'Generating design…';
       layout = null;
-      sourceTotals.hidden = true;
-      resetRender();
       sourceStatus.textContent = '';
       try {
         const response = await fetch('/design', {
@@ -300,9 +258,7 @@
           checkbox.dataset.elementId = element.id;
           checkbox.addEventListener('change', () => {
             if (checkbox.checked) selectedIds.add(element.id); else selectedIds.delete(element.id);
-            resetRender();
-            sourceTotals.hidden = true;
-            sourceStatus.textContent = 'Selection changed. Source the checked items again.';
+            sourceStatus.textContent = 'Selection changed. Confirm when ready.';
             sourceButton.disabled = selectedIds.size === 0;
           });
           label.append(checkbox, ` ${element.type} × ${element.quantity}`);
@@ -347,9 +303,7 @@
       sourceButton.disabled = true;
       designButton.disabled = true;
       button.disabled = true;
-      sourceTotals.hidden = true;
       sourceStatus.textContent = "Searching retailers and verifying product matches…";
-      resetRender();
       try {
         const response = await fetch('/source', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -360,118 +314,67 @@
           sourceStatus.textContent = typeof data.detail === 'string' ? data.detail : 'Sourcing failed. Please try again.';
           return;
         }
-        document.querySelector('#materials-total').textContent =
-          `Sourced materials${data.sourcing_complete ? '' : ' (partial)'}: ${money(data.sourced_materials_total_usd)}`;
-        const range = data.estimated_features_range_usd;
-        document.querySelector('#features-total').textContent =
-          `Estimated features: ${money(range.min)}–${money(range.max)}`;
-        const total = data.project_total_range_usd;
-        document.querySelector('#project-total').textContent = total
-          ? `Total${data.sourcing_complete ? '' : ' (partial)'}: ${money(total.min)}–${money(total.max)} • Budget: ${money(sourceBudget)}` : '';
-        document.querySelector('#budget-note').textContent = data.budget_note || '';
-        const items = document.querySelector('#sourced-items');
-        items.replaceChildren();
-        for (const element of data.elements) {
-          const item = document.createElement('li');
-          item.textContent = `${element.type} × ${element.quantity}: `;
-          if (element.sourced_product) {
-            const product = element.sourced_product;
-            const link = document.createElement('a');
-            link.href = product.url;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            link.textContent = product.name;
-            item.append(link, ` — ${product.retailer || 'Home Depot'}: ${money(product.price)} per retail unit; ${money(element.sourced_total_usd)} total (lowest confirmed match)`);
-            if (element.alternative_products?.length) {
-              const details = document.createElement('details');
-              const summary = document.createElement('summary');
-              summary.textContent = `See ${element.alternative_products.length} alternatives`;
-              const alternatives = document.createElement('ul');
-              for (const alternative of element.alternative_products) {
-                const row = document.createElement('li');
-                const alternativeLink = document.createElement('a');
-                alternativeLink.href = alternative.url;
-                alternativeLink.target = '_blank';
-                alternativeLink.rel = 'noopener noreferrer';
-                alternativeLink.textContent = alternative.name;
-                row.append(alternativeLink, ` — ${alternative.retailer}: ${money(alternative.price)} per retail unit`);
-                alternatives.append(row);
-              }
-              details.append(summary, alternatives);
-              item.append(details);
-            }
-          } else if (element.estimated_feature) {
-            const estimate = element.estimated_feature;
-            item.append(`Estimated ${money(estimate.cost_range_usd.min)}–${money(estimate.cost_range_usd.max)} (${estimate.basis}; U.S. national). `);
-            const link = document.createElement('a');
-            link.href = estimate.source_url;
-            link.target = '_blank';
-            link.rel = 'noopener noreferrer';
-            link.textContent = 'Cost reference';
-            if (estimate.source_url) item.append(link);
-          } else {
-            item.append(`Not sourced: ${element.sourcing_note} Excluded from the materials total.`);
+        await yardState({ analysis, layout: data, originalPhoto: originalPhotoFile,
+          budget: sourceBudget, proposedLayout: layout, selectedIds: [...selectedIds],
+          userIntent: document.querySelector('#user-intent').value,
+          area: document.querySelector('#area').value });
+        window.location.assign('/view');
+      } catch (error) {
+        sourceStatus.textContent = 'Could not source or save this design. Check your connection and browser storage, then try again.';
+      } finally {
+        selection.disabled = false;
+        sourceButton.disabled = false;
+        designButton.disabled = false;
+        button.disabled = false;
+      }
+    });
+
+    try {
+      const saved = await yardState();
+      if (saved) {
+        analysis = saved.analysis;
+        layout = saved.proposedLayout;
+        originalPhotoFile = saved.originalPhoto;
+        selectedIds = new Set(saved.selectedIds);
+        document.querySelector('#budget').value = saved.budget;
+        document.querySelector('#user-intent').value = saved.userIntent;
+        document.querySelector('#area').value = saved.area;
+        document.querySelector('#width').textContent = formatRange(analysis.width_ft, 'ft');
+        document.querySelector('#length').textContent = formatRange(analysis.length_ft, 'ft');
+        document.querySelector('#area-range').textContent = formatRange(analysis.area_sq_ft, 'sq ft');
+        document.querySelector('#slope').textContent = analysis.slope;
+        document.querySelector('#limitations').textContent = analysis.limitations;
+        document.querySelector('#boundary-assumptions').textContent = `${analysis.confidence} confidence. ${(analysis.boundary_assumptions || []).join(' ')}`;
+        document.querySelector('#reference').textContent = analysis.reference_object ? `${analysis.reference_object.object}: ${analysis.reference_object.reasoning}` : 'Scale assumed.';
+        for (const text of analysis.existing_features) {
+          const li = document.createElement('li'); li.textContent = text; document.querySelector('#features').append(li);
+        }
+        for (const element of layout.elements) {
+          const label = document.createElement('label');
+          const checkbox = document.createElement('input');
+          checkbox.type = 'checkbox'; checkbox.checked = selectedIds.has(element.id);
+          checkbox.dataset.elementId = element.id;
+          checkbox.onchange = () => {
+            if (checkbox.checked) selectedIds.add(element.id); else selectedIds.delete(element.id);
+            sourceButton.disabled = selectedIds.size === 0;
+          };
+          label.append(checkbox, ` ${element.type} × ${element.quantity}`);
+          document.querySelector('#item-checklist').append(label);
+          const row = document.createElement('tr');
+          for (const key of ['id','type','category','quantity','position_x_ft','position_y_ft','width_ft','length_ft']) {
+            const cell = document.createElement('td'); cell.textContent = element[key]; row.append(cell);
           }
-          items.append(item);
+          document.querySelector('#design-elements').append(row);
         }
-        sourceTotals.hidden = false;
-        sourcedLayout = data;
-        renderButton.disabled = !originalPhotoUrl || !data.elements.some(element => element.sourced_product || element.estimated_feature);
-        sourceStatus.textContent = data.sourcing_complete
-          ? 'Sourcing complete. Review product sizes and quantities before purchasing.'
-          : 'Sourcing incomplete. Some products could not be priced; the materials total is partial.';
-      } catch (error) {
-        sourceStatus.textContent = 'Could not reach the server or read its response. Please try again.';
-      } finally {
-        selection.disabled = false;
-        sourceButton.disabled = false;
-        designButton.disabled = false;
-        button.disabled = false;
+        for (const [id, values] of [['design-notes', layout.notes], ['design-warnings', layout.warnings || []]]) {
+          for (const text of values) { const li = document.createElement('li'); li.textContent = text; document.getElementById(id).append(li); }
+        }
+        document.querySelector('#design-warnings-section').hidden = !layout.warnings?.length;
+        sourceButton.disabled = selectedIds.size === 0;
+        results.hidden = designForm.hidden = designResults.hidden = false;
+        status.textContent = 'Your analyzed photo and selections are restored. Upload another photo to start over.';
       }
-    });
-    renderButton.addEventListener('click', async () => {
-      if (!analysis || !sourcedLayout || !originalPhotoFile || renderButton.disabled) return;
-      renderButton.disabled = true;
-      selection.disabled = true;
-      sourceButton.disabled = true;
-      designButton.disabled = true;
-      button.disabled = true;
-      renderResults.hidden = true;
-      renderedPhoto.removeAttribute('src');
-      renderStatus.textContent = 'Rendering your redesigned yard… This may take a few minutes.';
-      try {
-        const originalPhotoData = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result);
-          reader.onerror = () => reject(new Error('Could not read original photo'));
-          reader.readAsDataURL(originalPhotoFile);
-        });
-        const response = await fetch('/render', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ analysis, layout: { ...sourcedLayout, elements: sourcedLayout.elements.filter(element => element.sourced_product || element.estimated_feature) }, original_photo: originalPhotoData }),
-        });
-        const data = await response.json();
-        if (!response.ok) {
-          renderStatus.textContent = typeof data.detail === 'string' ? data.detail : 'Rendering failed. Please try again.';
-          return;
-        }
-        if (typeof data.image_url !== 'string' || !data.image_url.startsWith('data:image/png;base64,')) {
-          throw new Error('Invalid render image');
-        }
-        renderedPhoto.src = data.image_url;
-        await renderedPhoto.decode();
-        renderResults.hidden = false;
-        renderStatus.textContent = 'Rendering complete.';
-      } catch (error) {
-        renderStatus.textContent = 'Could not load the rendered image. Please try again.';
-      } finally {
-        selection.disabled = false;
-        renderButton.disabled = false;
-        sourceButton.disabled = false;
-        designButton.disabled = false;
-        button.disabled = false;
-      }
-    });
+    } catch { status.textContent = 'Browser storage is unavailable. Enable site storage to save and view a design.'; }
   </script>
 </body>
 </html>

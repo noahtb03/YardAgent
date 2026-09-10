@@ -110,10 +110,51 @@ tight budgets. If all proposed additions must be removed, the response still
 returns a layout with an empty list and explanatory warnings. Malformed API data,
 invalid request types, and service failures retain their normal HTTP errors.
 
-After sourcing, select **Render redesigned yard**. The page displays the generated
-image beside the original analyzed photo (stacked on small screens). A new analysis,
-design, or sourcing attempt clears the previous rendering. Rendering requires at
-least one layout element and uses the server's `OPENAI_API_KEY`.
+On `/`, upload/analyze a photo, edit the area and budget, enter intent or choose
+styles, generate a design, and check the additions you want. **Confirm selections
+& view yard** sources only those items, saves the enriched layout and original
+analyzed photo in IndexedDB, and navigates to `/view`. The per-tab design survives
+reloads. **Edit selections** restores the inputs and checklist. Reconfirming builds
+a fresh preview. Browser site storage must be enabled; clearing it removes saved designs.
+
+`/view` shows a three.js scene with OrbitControls and an itemized price/budget
+sidebar, including retailer alternatives, unpriced items, and national feature
+estimates. Drag to rotate, right-drag to pan, scroll/pinch to zoom, or reset the
+camera. Three.js 0.180.0 is vendored under `static/vendor/three` with its MIT license;
+the viewer needs no external CDN. Controls follow the
+[OrbitControls documentation](https://threejs.org/docs/pages/OrbitControls.html).
+
+`POST /model` takes `{ "analysis": <analysis>, "layout": <sourced layout>,
+"existing_feature_bounds": [] }`. Optional bounds use the same name, X/Y, width
+and length fields as `/design`. It returns `model_url`, `fallback`, and `warnings`.
+The server writes a deterministic Blender script and separate scene JSON, runs
+Blender headless with a 120-second timeout, and exports binary glTF (`yard.glb`).
+Only the generated GLB is served at `/models/<job-id>/yard.glb`; scripts and logs
+remain private under ignored `.yard-models/`. These local artifacts persist until
+removed by the operator. Blender jobs run one at a time.
+
+Install Blender and put `blender` on PATH, or set `BLENDER_PATH` to its executable.
+Windows installations under `Program Files/Blender Foundation` are also detected:
+
+```powershell
+$env:BLENDER_PATH = 'C:\Program Files\Blender Foundation\Blender 5.2\blender.exe'
+```
+
+Ground dimensions use the same minimum width/length estimates as design validation.
+Coordinates are near-left group footprints in feet, converted to meters for glTF.
+Quantities are distributed within each footprint: boxes for installed hardscape
+and furniture, cylinders for plants/trees/planters, and small cylinders for lights.
+These are spatial placeholders, not detailed retail product meshes; heights and
+level terrain are illustrative. Existing features are static and carry no purchase
+price. Explicit bounds preserve their placement; otherwise description-based
+positions/sizes are approximate and listed in warnings. Unpriced additions remain
+in the sidebar but are omitted from both previews.
+
+If Blender fails, times out, or the browser cannot load/display 3D, `/view`
+automatically calls the existing `/render` endpoint and displays its image beside
+the original (stacked on small screens). The sidebar remains available throughout.
+A failed photo render has a retry button. Photo rendering requires at least one
+priced/estimated selected element and the server's `OPENAI_API_KEY`.
 
 `POST /render` accepts JSON with `analysis` (the `/analyze` response), `layout`
 (the enriched `/source` response), and required `original_photo` (the original
@@ -156,7 +197,7 @@ such as an existing shed with warnings. Descriptive locations still require meas
 verify clearances; free-text feature matching is conservative, not a complete
 semantic inventory.
 
-Select **Source products** after choosing items. `POST /source` accepts
+Select **Confirm selections & view yard** after choosing items. `POST /source` accepts
 `{"layout": <design with only checked elements>, "budget": <USD number>}`
 (up to 50 elements, with unique IDs). Retailer
 searches use the browser; product-match confirmation requires `OPENAI_API_KEY`

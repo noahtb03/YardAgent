@@ -9,6 +9,8 @@ import re
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from modeling import MODEL_ROOT, generate_model
 from PIL import Image, ImageOps, UnidentifiedImageError
 from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -17,6 +19,22 @@ from sourcing import CostRange, FeatureEstimate, SourcedProduct, source_layout
 app = FastAPI(title="YardAgent")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
 INDEX_PATH = Path(__file__).parent / "static" / "index.html"
+app.mount('/static', StaticFiles(directory=INDEX_PATH.parent), name='static')
+
+
+@app.get('/view', include_in_schema=False)
+def view_page():
+    return FileResponse(INDEX_PATH.with_name('view.html'))
+
+
+@app.get('/models/{job_id}/yard.glb', include_in_schema=False)
+def model_file(job_id: str):
+    if not re.fullmatch(r'[0-9a-f]{32}', job_id):
+        raise HTTPException(404, 'Model not found.')
+    path = MODEL_ROOT / job_id / 'yard.glb'
+    if not path.is_file():
+        raise HTTPException(404, 'Model not found.')
+    return FileResponse(path, media_type='model/gltf-binary')
 
 
 class EstimateRange(BaseModel):
@@ -159,6 +177,25 @@ class SourcedLayout(DesignLayout):
     budget: float | None = None
     project_total_range_usd: CostRange | None = None
     budget_note: str = ""
+
+
+class ModelRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    analysis: YardAnalysis
+    layout: SourcedLayout
+    existing_feature_bounds: list[ExistingFeatureBounds] = Field(default_factory=list, max_length=100)
+
+
+@app.post('/model')
+def model(request: ModelRequest):
+    dimensions = [value for item in request.layout.elements + request.existing_feature_bounds
+                  for value in (item.position_x_ft, item.position_y_ft, item.width_ft, item.length_ft)]
+    dimensions += [r.min for r in (request.analysis.width_ft, request.analysis.length_ft) if r]
+    if (len(request.layout.elements) > 50 or sum(i.quantity for i in request.layout.elements) > 1000
+            or len(request.analysis.existing_features) > 100 or any(v > 10000 or 0 < v < .001 for v in dimensions)):
+        return {'model_url': None, 'fallback': True, 'warnings': ['Scene too large for 3D preview. Using photo render instead.']}
+    return generate_model(request.analysis.model_dump(), request.layout.model_dump(),
+                          [b.model_dump() for b in request.existing_feature_bounds])
 
 
 class RenderRequest(BaseModel):

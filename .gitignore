@@ -4,3 +4,4 @@
 *.pyc
 .sourcing-browser/
 sourcing-diagnostics/
+.yard-models/
