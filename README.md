@@ -30,6 +30,8 @@ Before starting the server, set your API key in the same shell:
 $env:OPENAI_API_KEY = "your-api-key"
 # Optional: choose another model supporting vision and structured outputs.
 $env:OPENAI_MODEL = "gpt-4o"
+# Optional: a GPT Image model supporting PNG output.
+$env:OPENAI_IMAGE_MODEL = "gpt-image-2"
 ```
 
 On macOS/Linux, use `export OPENAI_API_KEY="your-api-key"`.
@@ -68,6 +70,32 @@ posts the original analysis, budget, and any area value to `/design`, then shows
 the layout elements in a table with quantities, positions, and dimensions,
 alongside the estimated cost and design notes. Width and length estimates are
 required to generate a design.
+
+After sourcing, select **Render redesigned yard**. The page displays the generated
+image beside the original analyzed photo (stacked on small screens). A new analysis,
+design, or sourcing attempt clears the previous rendering. Rendering requires at
+least one layout element and uses the server's `OPENAI_API_KEY`.
+
+`POST /render` accepts JSON with `analysis` (the `/analyze` response) and `layout`
+(the enriched `/source` response). It returns `image_url`, a PNG data URL, and
+`prompt`, the exact image-generation prompt. Analysis now includes
+`photo_description`: visible scene, viewpoint, background, surfaces, colors, and
+lighting. Older analysis JSON without that field falls back to its existing-feature
+and slope descriptions. The prompt uses each sourced product's actual name,
+quantity, X/Y position, and group footprint, preserving existing site features.
+Estimated features and unavailable products use their generic layout descriptions.
+
+The server calls the [OpenAI Images API](https://developers.openai.com/api/docs/guides/image-generation)
+with `OPENAI_IMAGE_MODEL` (default `gpt-image-2`), one 1536×1024 PNG at medium quality,
+a 180-second timeout, and no automatic retries. Image generation incurs API charges
+and requires access to the configured image model. Missing configuration or quota
+limits return 503, upstream failures or invalid image data return 502, and timeouts
+return 504. Invalid layouts return 422 before generation.
+
+Rendering uses the photo's **text description**, not a direct image edit. It is a
+photorealistic concept, with approximate product appearance and positioning. The
+original photo stays in browser memory for comparison; generated images are
+returned directly and are not saved on the server. Both disappear on page reload.
 
 Existing features are retained site constraints, not purchases. The design prompt
 excludes them from new elements and costs, and validation rejects named duplicates
