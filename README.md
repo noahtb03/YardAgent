@@ -62,6 +62,12 @@ slope, features, and limitations. Its editable area input starts at the area
 range midpoint, or stays empty when area cannot be estimated. Edits remain in
 the page and do not change the original JSON response or persist after reload.
 
+After analysis, enter a budget in USD and select **Generate design**. The page
+posts the original analysis, budget, and any area value to `/design`, then shows
+the layout elements in a table with quantities, positions, and dimensions,
+alongside the estimated cost and design notes. Width and length estimates are
+required to generate a design.
+
 The app does not save uploaded images locally. It normalizes the first frame to
 an orientation-corrected JPEG up to 2048 pixels per side and sends it to OpenAI
 with response storage disabled. Pillow supports common formats such as JPEG,

@@ -11,10 +11,15 @@
     button { padding: 12px; border: 0; border-radius: 6px; color: white; background: #256447; cursor: pointer; }
     button:disabled { opacity: .6; cursor: wait; }
     pre { padding: 20px; border-radius: 8px; background: #e7eee8; white-space: pre-wrap; overflow-wrap: anywhere; }
-    #results { margin-top: 24px; padding: 24px; border-radius: 12px; background: white; }
+    #results, #design-results { margin-top: 24px; padding: 24px; border-radius: 12px; background: white; }
     dt { font-weight: 600; margin-top: 12px; }
     dd { margin: 4px 0 16px; }
-    #area { padding: 8px; max-width: 100%; box-sizing: border-box; }
+    #area, #budget { padding: 8px; max-width: 100%; box-sizing: border-box; }
+    #design-form { margin-top: 24px; }
+    [hidden] { display: none !important; }
+    .table-scroll { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px; border-bottom: 1px solid #cad6cd; text-align: left; }
   </style>
 </head>
 <body>
@@ -36,24 +41,57 @@
       <dt>Slope</dt><dd id="slope"></dd>
     </dl>
     <label for="area">Area to use (sq ft)</label>
-    <input id="area" name="area_sq_ft" type="number" min="0.1" step="any" aria-describedby="area-help">
+    <input id="area" name="area_sq_ft" form="design-form" type="number" min="0.1" step="any" aria-describedby="area-help">
     <p id="area-help">Starts at the estimated range midpoint. Edit it if you know your yard's area.</p>
     <h3>Existing features</h3>
     <ul id="features"></ul>
     <p id="limitations"></p>
   </section>
   <pre id="response" aria-label="JSON response" hidden></pre>
+  <form id="design-form" hidden>
+    <label for="budget">Budget (USD)</label>
+    <input id="budget" name="budget" type="number" min="0.01" step="0.01" required>
+    <button id="generate-design" type="submit">Generate design</button>
+  </form>
+  <p id="design-status" role="status" aria-live="polite"></p>
+  <section id="design-results" aria-labelledby="design-title" hidden>
+    <h2 id="design-title">Suggested layout</h2>
+    <p id="design-cost"></p>
+    <p>Positions are in feet from the near-left corner of the photo: X runs right and Y runs toward the far boundary. Dimensions cover the whole group of items.</p>
+    <div class="table-scroll">
+      <table>
+        <caption>Layout elements</caption>
+        <thead><tr>
+          <th scope="col">ID</th><th scope="col">Type</th><th scope="col">Category</th><th scope="col">Quantity</th>
+          <th scope="col">X (ft)</th><th scope="col">Y (ft)</th><th scope="col">Width (ft)</th><th scope="col">Length (ft)</th>
+        </tr></thead>
+        <tbody id="design-elements"></tbody>
+      </table>
+    </div>
+    <h3>Design notes</h3>
+    <ul id="design-notes"></ul>
+  </section>
   <script>
     const form = document.querySelector('#upload-form');
     const button = document.querySelector('#submit');
     const status = document.querySelector('#status');
     const output = document.querySelector('#response');
     const results = document.querySelector('#results');
+    const designForm = document.querySelector('#design-form');
+    const designButton = document.querySelector('#generate-design');
+    const designStatus = document.querySelector('#design-status');
+    const designResults = document.querySelector('#design-results');
+    let analysis = null;
     const formatRange = (range, unit) => range
       ? `${range.min.toLocaleString()}–${range.max.toLocaleString()} ${unit}`
       : 'Cannot estimate from this photo';
     form.addEventListener('submit', async (event) => {
       event.preventDefault();
+      if (button.disabled) return;
+      analysis = null;
+      designForm.hidden = true;
+      designResults.hidden = true;
+      designStatus.textContent = '';
       output.hidden = true;
       results.hidden = true;
       document.querySelector('#area').value = '';
@@ -94,10 +132,84 @@
         results.hidden = false;
         output.textContent = JSON.stringify(data, null, 2);
         output.hidden = false;
+        analysis = data;
+        designForm.hidden = false;
+        designButton.disabled = !data.width_ft || !data.length_ft;
+        if (designButton.disabled) {
+          designStatus.textContent = 'Design requires width and length estimates. Try another photo with a visible scale reference.';
+        }
         status.textContent = 'Analysis complete. Review the estimates and adjust the area as needed.';
       } catch (error) {
         status.textContent = 'Could not reach the server or read its response. Please try again.';
       } finally {
+        button.disabled = false;
+      }
+    });
+    designForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      if (!analysis || designButton.disabled || !designForm.reportValidity()) return;
+      const budget = document.querySelector('#budget').valueAsNumber;
+      if (!Number.isFinite(budget) || budget <= 0) {
+        designStatus.textContent = 'Enter a budget greater than zero.';
+        return;
+      }
+      const payload = { analysis, budget };
+      const area = document.querySelector('#area');
+      if (area.value !== '') {
+        if (!Number.isFinite(area.valueAsNumber) || area.valueAsNumber <= 0) {
+          designStatus.textContent = 'Enter an area greater than zero or leave it empty.';
+          return;
+        }
+        payload.area_sq_ft = area.valueAsNumber;
+      }
+      designButton.disabled = true;
+      button.disabled = true;
+      designResults.hidden = true;
+      designStatus.textContent = 'Generating design…';
+      try {
+        const response = await fetch('/design', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          designStatus.textContent = typeof data.detail === 'string' ? data.detail : 'Design failed. Check the budget and area, then try again.';
+          return;
+        }
+        const rows = document.querySelector('#design-elements');
+        rows.replaceChildren();
+        for (const element of data.elements) {
+          const row = document.createElement('tr');
+          for (const key of ['id', 'type', 'category', 'quantity', 'position_x_ft', 'position_y_ft', 'width_ft', 'length_ft']) {
+            const cell = document.createElement('td');
+            cell.textContent = element[key];
+            row.appendChild(cell);
+          }
+          rows.appendChild(row);
+        }
+        if (!data.elements.length) {
+          const row = document.createElement('tr');
+          const cell = document.createElement('td');
+          cell.colSpan = 8;
+          cell.textContent = 'No feasible additions fit this budget and site. See the notes below.';
+          row.appendChild(cell);
+          rows.appendChild(row);
+        }
+        document.querySelector('#design-cost').textContent = `Estimated cost: ${data.estimated_cost_usd.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}`;
+        const notes = document.querySelector('#design-notes');
+        notes.replaceChildren();
+        for (const note of data.notes) {
+          const item = document.createElement('li');
+          item.textContent = note;
+          notes.appendChild(item);
+        }
+        designResults.hidden = false;
+        designStatus.textContent = 'Design complete.';
+      } catch (error) {
+        designStatus.textContent = 'Could not reach the server or read its response. Please try again.';
+      } finally {
+        designButton.disabled = false;
         button.disabled = false;
       }
     });
