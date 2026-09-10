@@ -57,6 +57,14 @@
   <section id="design-results" aria-labelledby="design-title" hidden>
     <h2 id="design-title">Suggested layout</h2>
     <p id="design-cost"></p>
+    <button id="source-products" type="button">Source products</button>
+    <p id="source-status" role="status" aria-live="polite"></p>
+    <div id="source-totals" hidden>
+      <p id="materials-total"></p>
+      <p id="features-total"></p>
+      <p>Product totals use the listed price × layout quantity, assuming one retail unit per item. Check pack sizes and material coverage. Tax, delivery, and retail installation are excluded. Feature ranges use U.S. national planning allowances; regional questions can be added later.</p>
+      <ul id="sourced-items"></ul>
+    </div>
     <p>Positions are in feet from the near-left corner of the photo: X runs right and Y runs toward the far boundary. Dimensions cover the whole group of items.</p>
     <div class="table-scroll">
       <table>
@@ -82,6 +90,11 @@
     const designStatus = document.querySelector('#design-status');
     const designResults = document.querySelector('#design-results');
     let analysis = null;
+    let layout = null;
+    const sourceButton = document.querySelector('#source-products');
+    const sourceStatus = document.querySelector('#source-status');
+    const sourceTotals = document.querySelector('#source-totals');
+    const money = value => value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
     const formatRange = (range, unit) => range
       ? `${range.min.toLocaleString()}–${range.max.toLocaleString()} ${unit}`
       : 'Cannot estimate from this photo';
@@ -89,6 +102,9 @@
       event.preventDefault();
       if (button.disabled) return;
       analysis = null;
+      layout = null;
+      sourceTotals.hidden = true;
+      sourceStatus.textContent = '';
       designForm.hidden = true;
       designResults.hidden = true;
       designStatus.textContent = '';
@@ -166,6 +182,9 @@
       button.disabled = true;
       designResults.hidden = true;
       designStatus.textContent = 'Generating design…';
+      layout = null;
+      sourceTotals.hidden = true;
+      sourceStatus.textContent = '';
       try {
         const response = await fetch('/design', {
           method: 'POST',
@@ -205,10 +224,72 @@
           notes.appendChild(item);
         }
         designResults.hidden = false;
+        layout = data;
         designStatus.textContent = 'Design complete.';
       } catch (error) {
         designStatus.textContent = 'Could not reach the server or read its response. Please try again.';
       } finally {
+        designButton.disabled = false;
+        button.disabled = false;
+      }
+    });
+    sourceButton.addEventListener('click', async () => {
+      if (!layout || sourceButton.disabled) return;
+      sourceButton.disabled = true;
+      designButton.disabled = true;
+      button.disabled = true;
+      sourceTotals.hidden = true;
+      sourceStatus.textContent = 'Searching Home Depot and estimating features…';
+      try {
+        const response = await fetch('/source', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(layout),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          sourceStatus.textContent = typeof data.detail === 'string' ? data.detail : 'Sourcing failed. Please try again.';
+          return;
+        }
+        document.querySelector('#materials-total').textContent =
+          `Sourced materials${data.sourcing_complete ? '' : ' (partial)'}: ${money(data.sourced_materials_total_usd)}`;
+        const range = data.estimated_features_range_usd;
+        document.querySelector('#features-total').textContent =
+          `Estimated features: ${money(range.min)}–${money(range.max)}`;
+        const items = document.querySelector('#sourced-items');
+        items.replaceChildren();
+        for (const element of data.elements) {
+          const item = document.createElement('li');
+          item.textContent = `${element.type} × ${element.quantity}: `;
+          if (element.sourced_product) {
+            const product = element.sourced_product;
+            const link = document.createElement('a');
+            link.href = product.url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = product.name;
+            item.append(link, ` — ${money(product.price)} per retail unit; ${money(element.sourced_total_usd)} total`);
+          } else if (element.estimated_feature) {
+            const estimate = element.estimated_feature;
+            item.append(`Estimated ${money(estimate.cost_range_usd.min)}–${money(estimate.cost_range_usd.max)} (${estimate.basis}; U.S. national). `);
+            const link = document.createElement('a');
+            link.href = estimate.source_url;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            link.textContent = 'Cost reference';
+            item.append(link);
+          } else {
+            item.append(`Not sourced: ${element.sourcing_note} Excluded from the materials total.`);
+          }
+          items.append(item);
+        }
+        sourceTotals.hidden = false;
+        sourceStatus.textContent = data.sourcing_complete
+          ? 'Sourcing complete. Review product sizes and quantities before purchasing.'
+          : 'Sourcing incomplete. Some products could not be priced; the materials total is partial.';
+      } catch (error) {
+        sourceStatus.textContent = 'Could not reach the server or read its response. Please try again.';
+      } finally {
+        sourceButton.disabled = false;
         designButton.disabled = false;
         button.disabled = false;
       }

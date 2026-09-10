@@ -5,12 +5,14 @@ import os
 import warnings
 from typing import Literal
 import json
+import re
 
 from fastapi import FastAPI, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from PIL import Image, ImageOps, UnidentifiedImageError
 from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from sourcing import CostRange, FeatureEstimate, SourcedProduct, source_layout
 
 app = FastAPI(title="YardAgent")
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
@@ -109,6 +111,30 @@ class DesignLayout(BaseModel):
     notes: list[str]
 
 
+class SourcedElement(LayoutElement):
+    sourced_product: SourcedProduct | None
+    estimated_feature: FeatureEstimate | None
+    sourcing_status: Literal["sourced", "estimated", "unavailable"]
+    sourcing_note: str | None
+    sourced_total_usd: float | None
+
+
+class SourcedLayout(DesignLayout):
+    elements: list[SourcedElement]
+    sourced_materials_total_usd: float
+    estimated_features_range_usd: CostRange
+    sourcing_complete: bool
+
+
+@app.post("/source", response_model=SourcedLayout)
+def source(layout: DesignLayout):
+    if len(layout.elements) > 50:
+        raise HTTPException(422, "Source at most 50 elements per request.")
+    if len({item.id for item in layout.elements}) != len(layout.elements):
+        raise HTTPException(422, "Layout element IDs must be unique.")
+    return source_layout(layout.model_dump())
+
+
 def fits(item: Footprint, width: float, length: float) -> bool:
     return (item.position_x_ft + item.width_ft <= width
             and item.position_y_ft + item.length_ft <= length)
@@ -128,6 +154,8 @@ def validate_layout(layout: DesignLayout, request: DesignRequest):
     if len({item.id for item in layout.elements}) != len(layout.elements):
         raise ValueError("Layout element IDs must be unique.")
     for item in layout.elements:
+        if duplicates_existing(item, request):
+            raise ValueError("An existing feature was included as a new purchase.")
         if not fits(item, width, length):
             raise ValueError("A layout element extends outside the yard.")
         if any(overlaps(item, feature) for feature in request.existing_feature_bounds):
@@ -137,6 +165,24 @@ def validate_layout(layout: DesignLayout, request: DesignRequest):
     )
     if sum(item.width_ft * item.length_ft for item in layout.elements) > area_limit:
         raise ValueError("Layout footprints exceed the available area.")
+
+
+def duplicates_existing(item: LayoutElement, request: DesignRequest) -> bool:
+    """Conservatively reject named existing assets; semantic handling is in the prompt."""
+    def words(value):
+        return {word.rstrip("s") for word in re.findall(r"[a-z]+", value.lower())}
+    proposed = words(item.type)
+    assets = {"shed", "fence", "pool", "patio", "deck", "gazebo", "pergola", "bar"}
+    accessories = {"chair", "table", "stool", "light", "planter", "cushion", "cover",
+                   "paver", "tile", "stone", "gravel", "sand", "liner", "pump"}
+    for description in [*request.analysis.existing_features,
+                        *(feature.name for feature in request.existing_feature_bounds)]:
+        existing = words(description)
+        if proposed and proposed <= existing:
+            return True
+        if proposed & existing & assets and not proposed & accessories:
+            return True
+    return False
 
 
 DESIGN_PROMPT = """Create a practical yard layout using the supplied yard analysis
@@ -151,6 +197,11 @@ area_sq_ft if provided, otherwise the minimum estimated area. Leave circulation
 space. Avoid incompatible overlaps between new elements. Preserve existing
 features, access, tree root zones, and drainage; use their described locations and
 slope. Never overlap supplied existing_feature_bounds, which are reserved zones.
+ALL analysis.existing_features and existing_feature_bounds are already owned site
+constraints, NEVER new purchases. Do not put them in elements, charge for them,
+replace them, or recreate them under another name. For example, an existing shed
+must remain a constraint to work around, not a shed element to buy. Describe
+retained features only in notes. Elements contains ONLY genuinely new additions.
 Where feature locations are only descriptive, explain your placement assumptions
 and that exact clearances need measured locations in notes; do not claim verified
 clearance. Do not invent precise locations as facts. Pool, patio (including concrete
@@ -160,6 +211,11 @@ Plants, furniture, and lighting are also available categories. Select realistic
 quantities and materials within the budget, allowing for installation and
 contingency, and return estimated_cost_usd for the whole layout. Cost is a rough
 planning estimate, not a quote. Explain major omissions and constraints in notes.
+Use U.S. national average planning costs; regional questions are deferred.
+Use specific searchable product types for new retail additions. Quantities refer
+to individual products or explicit retail packs, not square feet or cubic yards.
+Use category hardscape for installed pool, patio, and outdoor bar features. Do not
+also list their constituent materials as purchases (their estimates include them).
 If no feasible additions fit the budget/site, return an empty elements array and
 explain why. Return structured JSON.
 """
