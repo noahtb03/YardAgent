@@ -23,6 +23,11 @@ def layout(*elements):
 
 
 class SourcingTests(unittest.TestCase):
+    def setUp(self):
+        verifier = patch("sourcing.confirm_products", side_effect=lambda element, candidates: candidates)
+        verifier.start()
+        self.addCleanup(verifier.stop)
+
     def test_source_endpoint_returns_enriched_layout_and_validates_input(self):
         with TestClient(app) as client:
             response = client.post("/source", json=layout(element("Patio", "hardscape")))
@@ -79,7 +84,7 @@ class SourcingTests(unittest.TestCase):
             self.assertEqual(len(list(Path(diagnostics).glob("*.json"))), 4)
         self.assertFalse(result["sourcing_complete"])
         self.assertEqual(result["estimated_features_range_usd"], {"min": 160, "max": 500})
-        self.assertEqual(result["elements"][0]["sourcing_note"], "No matching priced products found.")
+        self.assertEqual(result["elements"][0]["sourcing_note"], "No confirmed matching products found.")
 
     def test_parallel_retailers_failure_isolation_and_lowest_price(self):
         barrier = Barrier(4)
@@ -114,6 +119,11 @@ class SourcingTests(unittest.TestCase):
 
 
 class BrowserTests(unittest.TestCase):
+    def setUp(self):
+        verifier = patch("sourcing.confirm_products", side_effect=lambda element, candidates: candidates)
+        verifier.start()
+        self.addCleanup(verifier.stop)
+
     @classmethod
     def setUpClass(cls):
         cls.playwright = sync_playwright().start()

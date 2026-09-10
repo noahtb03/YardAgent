@@ -293,7 +293,7 @@
       designButton.disabled = true;
       button.disabled = true;
       sourceTotals.hidden = true;
-      sourceStatus.textContent = "Comparing Home Depot, Lowe's, Wayfair, and Amazon…";
+      sourceStatus.textContent = "Searching retailers and verifying product matches…";
       resetRender();
       try {
         const response = await fetch('/source', {
@@ -322,7 +322,7 @@
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = product.name;
-            item.append(link, ` — ${product.retailer || 'Home Depot'}: ${money(product.price)} per retail unit; ${money(element.sourced_total_usd)} total (lowest listed price)`);
+            item.append(link, ` — ${product.retailer || 'Home Depot'}: ${money(product.price)} per retail unit; ${money(element.sourced_total_usd)} total (lowest confirmed match)`);
             if (element.alternative_products?.length) {
               const details = document.createElement('details');
               const summary = document.createElement('summary');

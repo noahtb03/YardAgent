@@ -151,14 +151,28 @@ verify clearances; free-text feature matching is conservative, not a complete
 semantic inventory.
 
 Select **Source products** after generating a design. `POST /source` accepts the
-original `/design` JSON directly (up to 50 elements, with unique IDs), without an
-API key. It returns the layout with these additional fields on each element:
+original `/design` JSON directly (up to 50 elements, with unique IDs). Retailer
+searches use the browser; product-match confirmation requires `OPENAI_API_KEY`
+and uses `OPENAI_MODEL`. It returns these additional fields on each element:
 
 - `sourced_product`: the lowest-priced successful match's `name`, `price` in USD
   per retail unit, `retailer`, and `url`, or `null` when not sourced.
 - `alternative_products`: all other valid matches from the rendered search
   results, sorted by price, each with the same product fields. The page shows
-  the selected retailer and expandable alternatives with their retailers/prices.
+the selected retailer and expandable alternatives with their retailers/prices.
+
+Before price selection, obvious sprays, chemicals, treatments, seeds, accessories
+and replacement parts are rejected for plant/tree and furniture elements. The
+remaining candidates are reviewed by the model in batches of 20 using their
+scraped names, retailer and URL against the requested type and category. The model
+must confirm the actual plant/tree or complete furniture piece, not a related
+accessory. Uncertain matches are rejected. The cheapest confirmed match becomes
+`sourced_product`; only other confirmed matches become alternatives. Verification
+is cached per element type/category within the request. Missing credentials,
+failed reviews or malformed candidate IDs leave those candidates unverified and
+excluded, never silently accepted. Model reviews incur API usage and can add up
+to 60 seconds per batch on timeout. This is title-based model confirmation, not
+inspection of the physical product; check details before purchasing.
 - `estimated_feature`: an explicitly `estimated` cost range, region, pricing
   basis, reference URL, and review date for installed pools, patios, and bars.
 - `sourcing_status`, `sourcing_note`, and `sourced_total_usd`: sourcing outcome,
