@@ -17,7 +17,7 @@ from main import app, RenderRequest, build_render_prompt
 
 
 def payload():
-    return dict(analysis=dict(width_ft=dict(min=30, max=40), length_ft=dict(min=30, max=40),
+    return dict(original_photo="data:image/png;base64," + base64.b64encode(png()).decode(), analysis=dict(width_ft=dict(min=30, max=40), length_ft=dict(min=30, max=40),
         area_sq_ft=None, reference_object=None, slope="Flat",
         existing_features=["Wooden shed at far right"], limitations="Approximate scale",
         photo_description="A grassy yard with a brown shed, viewed from the house in afternoon light."),
@@ -60,13 +60,30 @@ class RenderTests(unittest.TestCase):
         encoded = base64.b64encode(png()).decode()
         with patch.dict("os.environ", OPENAI_API_KEY="test", OPENAI_IMAGE_MODEL="gpt-image-2"), \
                 patch("main.OpenAI") as api, TestClient(app) as client:
-            generate = api.return_value.__enter__.return_value.images.generate
+            generate = api.return_value.__enter__.return_value.images.edit
             generate.return_value = SimpleNamespace(data=[SimpleNamespace(b64_json=encoded)])
             response = client.post("/render", json=payload())
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["image_url"], "data:image/png;base64," + encoded)
             self.assertEqual(generate.call_args.kwargs["prompt"], response.json()["prompt"])
             self.assertEqual(generate.call_args.kwargs["output_format"], "png")
+            image_name, image_bytes, image_type = generate.call_args.kwargs["image"]
+            self.assertEqual((image_name, image_type), ("original-yard.jpg", "image/jpeg"))
+            with Image.open(BytesIO(image_bytes)) as original:
+                self.assertEqual(original.size, (8, 8))
+                self.assertEqual(original.format, "JPEG")
+            api.return_value.__enter__.return_value.images.generate.assert_not_called()
+
+    def test_missing_or_invalid_original_photo_is_not_generated(self):
+        with patch("main.OpenAI") as api, TestClient(app) as client:
+            data = payload()
+            del data["original_photo"]
+            self.assertEqual(client.post("/render", json=data).status_code, 422)
+            data["original_photo"] = "data:image/png;base64,bm90IGFuIGltYWdl"
+            self.assertEqual(client.post("/render", json=data).status_code, 400)
+            data["original_photo"] = "https://example.com/photo.png"
+            self.assertEqual(client.post("/render", json=data).status_code, 400)
+            api.assert_not_called()
 
     def test_configuration_input_and_upstream_errors(self):
         with patch.dict("os.environ", OPENAI_API_KEY=""), TestClient(app) as client:
@@ -77,7 +94,7 @@ class RenderTests(unittest.TestCase):
                     (APITimeoutError(request=request), 504),
                     (RateLimitError("quota", response=httpx.Response(429, request=request), body=None), 503)]
         with patch.dict("os.environ", OPENAI_API_KEY="test"), patch("main.OpenAI") as api, TestClient(app) as client:
-            generate = api.return_value.__enter__.return_value.images.generate
+            generate = api.return_value.__enter__.return_value.images.edit
             invalid = payload(); invalid["layout"]["elements"][0]["position_x_ft"] = 100
             self.assertEqual(client.post("/render", json=invalid).status_code, 422)
             generate.assert_not_called()
@@ -117,6 +134,9 @@ class RenderBrowserTests(unittest.TestCase):
                 page.locator("#budget").fill("500")
                 page.get_by_role("button", name="Generate design").click()
                 page.get_by_role("button", name="Source products").click()
+                # A changed file picker must not substitute a different photo
+                # for the image that produced the current analysis/layout.
+                page.locator("#photo").set_input_files(dict(name="other.png", mimeType="image/png", buffer=b"different file"))
                 page.get_by_role("button", name="Render redesigned yard").click()
                 page.wait_for_function("document.querySelector('#render-status').textContent.includes('timed out')")
                 self.assertTrue(page.locator("#render-results").is_hidden())

@@ -1,5 +1,7 @@
 """Deterministic sourcing and browser checks; retailer/API responses are fixtures."""
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Barrier
 import unittest
 from unittest.mock import patch
 from fastapi.testclient import TestClient
@@ -7,7 +9,8 @@ from fastapi.testclient import TestClient
 from playwright.sync_api import sync_playwright, Error as BrowserError
 
 from main import app, DesignLayout, DesignRequest, SourcedLayout, source, validate_layout
-from sourcing import EXTRACT_PRODUCTS, feature_kind, select_product, source_layout
+from sourcing import (EXTRACT_PRODUCTS, RETAILERS, feature_kind, select_product,
+                      select_products, source_layout, search_all_retailers, search_retailer)
 
 
 def element(kind="Boxwood shrub", category="plant", quantity=2, **kwargs):
@@ -35,8 +38,9 @@ class SourcingTests(unittest.TestCase):
             area_sq_ft=None, reference_object=None, slope="Flat",
             existing_features=["Wooden shed at the far right", "Patio at the left"], limitations="")))
         for name in ("Shed", "Storage shed", "Existing wooden shed"):
-            with self.assertRaisesRegex(ValueError, "existing feature"):
-                validate_layout(DesignLayout.model_validate(layout(element(name, "hardscape"))), request)
+            result = validate_layout(DesignLayout.model_validate(layout(element(name, "hardscape"))), request)
+            self.assertEqual(result.elements, [])
+            self.assertTrue(any("existing feature" in warning for warning in result.warnings))
         validate_layout(DesignLayout.model_validate(layout(element("Patio chair", "furniture"))), request)
 
     def test_features_and_materials_are_distinct(self):
@@ -60,21 +64,43 @@ class SourcingTests(unittest.TestCase):
     def test_partial_results_quantity_rounding_and_deduplication(self):
         product = dict(name="Boxwood shrub", price=19.99, url="https://www.homedepot.com/p/Boxwood/123")
         second = element(); second["id"] = "second"
-        with patch("sourcing.sync_playwright"), patch("sourcing.search_product", side_effect=[
-            (product, None), (None, "No price")]) as search:
+        with patch("sourcing.search_all_retailers", return_value={"Boxwood shrub": [product], "Chair": []}) as search:
             result = source_layout(layout(element(), second, element("Chair", "furniture")))
-        self.assertEqual(search.call_count, 2)
+        search.assert_called_once_with(["Boxwood shrub", "Chair"])
         self.assertEqual(result["sourced_materials_total_usd"], 79.96)
         self.assertFalse(result["sourcing_complete"])
         self.assertIsNone(result["elements"][-1]["sourced_total_usd"])
         SourcedLayout.model_validate(result)
 
     def test_missing_browser_retains_feature_estimates(self):
-        with patch("sourcing.sync_playwright", side_effect=BrowserError("missing browser")):
+        with TemporaryDirectory() as diagnostics, patch("sourcing.DIAGNOSTICS_ROOT", Path(diagnostics)), \
+                patch("sourcing.sync_playwright", side_effect=BrowserError("missing browser")):
             result = source_layout(layout(element(), element("Patio", "hardscape")))
+            self.assertEqual(len(list(Path(diagnostics).glob("*.json"))), 4)
         self.assertFalse(result["sourcing_complete"])
         self.assertEqual(result["estimated_features_range_usd"], {"min": 160, "max": 500})
-        self.assertIn("browser unavailable", result["elements"][0]["sourcing_note"])
+        self.assertEqual(result["elements"][0]["sourcing_note"], "No matching priced products found.")
+
+    def test_parallel_retailers_failure_isolation_and_lowest_price(self):
+        barrier = Barrier(4)
+        def worker(retailer, queries):
+            barrier.wait(timeout=5)  # Fails if workers were run serially.
+            if retailer == "Home Depot":
+                raise BrowserError("403")
+            price = {"Lowe's": 19.99, "Wayfair": 29.99, "Amazon": 15.50}[retailer]
+            return {query: [dict(name=query, price=price, retailer=retailer,
+                                url="https://www." + RETAILERS[retailer]["domain"] + "/p/test")]
+                    for query in queries}
+        with patch("sourcing.search_retailer_queries", side_effect=worker), patch("sourcing.log_failure") as log:
+            result = source_layout(layout(element()))
+        item = result["elements"][0]
+        self.assertEqual(item["sourced_product"]["retailer"], "Amazon")
+        self.assertEqual([p["retailer"] for p in item["alternative_products"]], ["Lowe's", "Wayfair"])
+        self.assertEqual(result["sourced_materials_total_usd"], 31)
+        self.assertTrue(result["sourcing_complete"])
+        self.assertIsNone(item["sourcing_note"])
+        log.assert_called_once()
+        SourcedLayout.model_validate(result)
 
     def test_select_first_reasonable_priced_safe_product(self):
         candidates = [dict(name="Boxwood fertilizer", price="5", url="/p/Food/1"),
@@ -98,7 +124,7 @@ class BrowserTests(unittest.TestCase):
         cls.browser.close()
         cls.playwright.stop()
 
-    def test_card_price_and_structured_offer_extraction(self):
+    def test_card_price_ignores_unrendered_structured_offer(self):
         page = self.browser.new_page()
         try:
             page.set_content('''<div data-testid="product-pod">
@@ -109,6 +135,29 @@ class BrowserTests(unittest.TestCase):
                 "url":"/p/Food/1","offers":{"price":4,"priceCurrency":"USD"}}</script>''')
             product = select_product(page.evaluate(EXTRACT_PRODUCTS), "Boxwood shrub")
             self.assertEqual(product["price"], 19.99)
+        finally:
+            page.close()
+
+    def test_retailer_dom_adapters_and_403_diagnostics(self):
+        fixtures = {
+            "Lowe's": '<div data-selector="splp-prd-lst"><a href="https://www.lowes.com/pd/chair/123"><h3>Adirondack chair</h3></a><div data-selector="splp-prc">$39.99</div></div>',
+            "Wayfair": '<div data-test-id="ListingCard"><a href="https://www.wayfair.com/outdoor/pdp/chair.html"><h2 data-name-id="ListingCardName">Adirondack chair</h2></a><span data-test-id="PricingStandard-leadPrice">$49.99</span><s>$79.99</s></div>',
+            "Amazon": '<div data-component-type="s-search-result" data-asin="ABC"><a href="https://www.amazon.com/chair/dp/ABC"><h2>Adirondack chair</h2></a><span class="a-price"><span class="a-price-symbol">$</span><span class="a-price-whole">29.</span><span class="a-price-fraction">99</span></span><span class="a-price a-text-price">$79.99</span></div>',
+        }
+        page = self.browser.new_page()
+        try:
+            for retailer, html in fixtures.items():
+                with self.subTest(retailer=retailer):
+                    page.set_content(html)
+                    products = select_products(page.evaluate(EXTRACT_PRODUCTS, RETAILERS[retailer]), "Adirondack chair", retailer)
+                    self.assertEqual(len(products), 1)
+                    self.assertEqual(products[0]["retailer"], retailer)
+                    self.assertEqual(products[0]["price"], {"Lowe's":39.99,"Wayfair":49.99,"Amazon":29.99}[retailer])
+            page.route("**/s/**", lambda route: route.fulfill(status=403, content_type="text/html", body="<h1>Access denied diagnostic fixture</h1>"))
+            with TemporaryDirectory() as diagnostics, patch("sourcing.DIAGNOSTICS_ROOT", Path(diagnostics)):
+                self.assertEqual(search_retailer(page, "chair", "Home Depot"), [])
+                self.assertIn("diagnostic fixture", next(Path(diagnostics).glob("*.html")).read_text())
+                self.assertIn('"status": 403', next(Path(diagnostics).glob("*.json")).read_text())
         finally:
             page.close()
 
@@ -132,6 +181,28 @@ class BrowserTests(unittest.TestCase):
             page.wait_for_function("document.querySelector('#source-products').disabled === false")
             self.assertEqual(page.locator("#sourced-items li").count(), 1)
             self.assertEqual(errors, [])
+        finally:
+            page.close()
+
+    def test_ui_shows_selected_retailer_and_alternatives(self):
+        page = self.browser.new_page()
+        product = dict(name="Adirondack chair", price=50, retailer="Amazon", url="https://www.amazon.com/dp/ABC")
+        alternative = dict(name="Wood Adirondack chair", price=70, retailer="Wayfair", url="https://www.wayfair.com/outdoor/pdp/chair.html")
+        original = layout(element("Adirondack chair", "furniture"))
+        with patch("sourcing.search_all_retailers", return_value={"Adirondack chair": [product, alternative]}):
+            enriched = source_layout(original)
+        try:
+            page.route("http://yard.test/", lambda route: route.fulfill(content_type="text/html",
+                body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
+            page.route("**/source", lambda route: route.fulfill(json=enriched))
+            page.goto("http://yard.test/")
+            page.evaluate("value => { layout = value; designResults.hidden = false; }", original)
+            page.get_by_role("button", name="Source products").click()
+            page.wait_for_function("document.querySelector('#source-totals').hidden === false")
+            self.assertIn("Amazon: $50.00", page.locator("#sourced-items").inner_text())
+            page.get_by_text("See 1 alternatives").click()
+            self.assertIn("Wayfair: $70.00", page.locator("#sourced-items details").inner_text())
+            self.assertIn("$100.00", page.locator("#materials-total").inner_text())
         finally:
             page.close()
 

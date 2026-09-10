@@ -43,6 +43,7 @@
       <dt>Length</dt><dd id="length"></dd>
       <dt>Area range</dt><dd id="area-range"></dd>
       <dt>Reference object used</dt><dd id="reference"></dd>
+      <dt>Confidence and assumed boundaries</dt><dd id="boundary-assumptions"></dd>
       <dt>Slope</dt><dd id="slope"></dd>
     </dl>
     <label for="area">Area to use (sq ft)</label>
@@ -74,7 +75,7 @@
     <p id="render-status" role="status" aria-live="polite"></p>
     <section id="render-results" aria-labelledby="render-title" hidden>
       <h3 id="render-title">Your yard, redesigned</h3>
-      <p>AI-generated concept based on the photo description and layout. Product appearance and placement are approximate.</p>
+      <p>AI-edited concept using your original photo and layout. Existing structures are preserved in the editing instructions; review the image for unintended changes.</p>
       <div class="comparison">
         <figure><figcaption>Original photo</figcaption><img id="original-photo" alt="Original uploaded yard"></figure>
         <figure><figcaption>Redesigned yard</figcaption><img id="rendered-photo" alt="AI-generated concept of the redesigned yard"></figure>
@@ -93,6 +94,10 @@
     </div>
     <h3>Design notes</h3>
     <ul id="design-notes"></ul>
+    <div id="design-warnings-section" hidden>
+      <h3>Design warnings and adjustments</h3>
+      <ul id="design-warnings"></ul>
+    </div>
   </section>
   <script>
     const form = document.querySelector('#upload-form');
@@ -108,6 +113,7 @@
     let layout = null;
     let sourcedLayout = null;
     let originalPhotoUrl = null;
+    let originalPhotoFile = null;
     const renderButton = document.querySelector('#render-yard');
     const renderStatus = document.querySelector('#render-status');
     const renderResults = document.querySelector('#render-results');
@@ -135,6 +141,7 @@
       resetRender();
       if (originalPhotoUrl) URL.revokeObjectURL(originalPhotoUrl);
       originalPhotoUrl = null;
+      originalPhotoFile = null;
       originalPhoto.removeAttribute('src');
       sourceTotals.hidden = true;
       sourceStatus.textContent = '';
@@ -170,6 +177,8 @@
           ? `${reference.object}: assumed ${reference.assumed_dimension} of ${formatRange(reference.size_ft, 'ft')}. ${reference.reasoning}`
           : 'No usable reference object identified.';
         document.querySelector('#slope').textContent = data.slope;
+        document.querySelector('#boundary-assumptions').textContent =
+          `${data.confidence || 'low'} confidence. ${(data.boundary_assumptions || []).join(' ')}`;
         const features = document.querySelector('#features');
         features.replaceChildren();
         for (const feature of data.existing_features.length ? data.existing_features : ['No existing features identified.']) {
@@ -183,6 +192,7 @@
         output.hidden = false;
         analysis = data;
         originalPhotoUrl = URL.createObjectURL(file);
+        originalPhotoFile = file;
         originalPhoto.src = originalPhotoUrl;
         designForm.hidden = false;
         designButton.disabled = !data.width_ft || !data.length_ft;
@@ -259,6 +269,14 @@
           item.textContent = note;
           notes.appendChild(item);
         }
+        const warnings = document.querySelector('#design-warnings');
+        warnings.replaceChildren();
+        for (const warning of data.warnings || []) {
+          const item = document.createElement('li');
+          item.textContent = warning;
+          warnings.append(item);
+        }
+        document.querySelector('#design-warnings-section').hidden = !warnings.children.length;
         designResults.hidden = false;
         layout = data;
         designStatus.textContent = 'Design complete.';
@@ -275,7 +293,7 @@
       designButton.disabled = true;
       button.disabled = true;
       sourceTotals.hidden = true;
-      sourceStatus.textContent = 'Searching Home Depot and estimating features…';
+      sourceStatus.textContent = "Comparing Home Depot, Lowe's, Wayfair, and Amazon…";
       resetRender();
       try {
         const response = await fetch('/source', {
@@ -304,7 +322,25 @@
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             link.textContent = product.name;
-            item.append(link, ` — ${money(product.price)} per retail unit; ${money(element.sourced_total_usd)} total`);
+            item.append(link, ` — ${product.retailer || 'Home Depot'}: ${money(product.price)} per retail unit; ${money(element.sourced_total_usd)} total (lowest listed price)`);
+            if (element.alternative_products?.length) {
+              const details = document.createElement('details');
+              const summary = document.createElement('summary');
+              summary.textContent = `See ${element.alternative_products.length} alternatives`;
+              const alternatives = document.createElement('ul');
+              for (const alternative of element.alternative_products) {
+                const row = document.createElement('li');
+                const alternativeLink = document.createElement('a');
+                alternativeLink.href = alternative.url;
+                alternativeLink.target = '_blank';
+                alternativeLink.rel = 'noopener noreferrer';
+                alternativeLink.textContent = alternative.name;
+                row.append(alternativeLink, ` — ${alternative.retailer}: ${money(alternative.price)} per retail unit`);
+                alternatives.append(row);
+              }
+              details.append(summary, alternatives);
+              item.append(details);
+            }
           } else if (element.estimated_feature) {
             const estimate = element.estimated_feature;
             item.append(`Estimated ${money(estimate.cost_range_usd.min)}–${money(estimate.cost_range_usd.max)} (${estimate.basis}; U.S. national). `);
@@ -334,7 +370,7 @@
       }
     });
     renderButton.addEventListener('click', async () => {
-      if (!analysis || !sourcedLayout || !originalPhotoUrl || renderButton.disabled) return;
+      if (!analysis || !sourcedLayout || !originalPhotoFile || renderButton.disabled) return;
       renderButton.disabled = true;
       sourceButton.disabled = true;
       designButton.disabled = true;
@@ -343,9 +379,15 @@
       renderedPhoto.removeAttribute('src');
       renderStatus.textContent = 'Rendering your redesigned yard… This may take a few minutes.';
       try {
+        const originalPhotoData = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error('Could not read original photo'));
+          reader.readAsDataURL(originalPhotoFile);
+        });
         const response = await fetch('/render', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ analysis, layout: sourcedLayout }),
+          body: JSON.stringify({ analysis, layout: sourcedLayout, original_photo: originalPhotoData }),
         });
         const data = await response.json();
         if (!response.ok) {
