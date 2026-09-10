@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 
 from playwright.sync_api import sync_playwright, Error as BrowserError
 
-from main import app, DesignLayout, DesignRequest, SourcedLayout, source, validate_layout
+from main import app, DesignLayout, DesignRequest, SourcedLayout, SourceRequest, source, validate_layout
 from sourcing import (EXTRACT_PRODUCTS, RETAILERS, feature_kind, select_product,
                       select_products, source_layout, search_all_retailers, search_retailer)
 
@@ -19,7 +19,7 @@ def element(kind="Boxwood shrub", category="plant", quantity=2, **kwargs):
 
 
 def layout(*elements):
-    return dict(elements=list(elements), estimated_cost_usd=100, notes=[])
+    return dict(elements=list(elements), notes=[])
 
 
 class SourcingTests(unittest.TestCase):
@@ -30,12 +30,12 @@ class SourcingTests(unittest.TestCase):
 
     def test_source_endpoint_returns_enriched_layout_and_validates_input(self):
         with TestClient(app) as client:
-            response = client.post("/source", json=layout(element("Patio", "hardscape")))
+            response = client.post("/source", json=dict(layout=layout(element("Patio", "hardscape")), budget=1000))
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["elements"][0]["estimated_feature"]["status"], "estimated")
-            self.assertEqual(client.post("/source", json=layout(element(), element())).status_code, 422)
+            self.assertEqual(client.post("/source", json=dict(layout=layout(element(), element()), budget=1000)).status_code, 422)
             invalid = element(); invalid["quantity"] = 0
-            self.assertEqual(client.post("/source", json=layout(invalid)).status_code, 422)
+            self.assertEqual(client.post("/source", json=dict(layout=layout(invalid), budget=1000)).status_code, 422)
 
     def test_existing_shed_rejected_but_accessory_allowed(self):
         request = DesignRequest.model_validate(dict(budget=1000, analysis=dict(
@@ -57,9 +57,9 @@ class SourcingTests(unittest.TestCase):
 
     def test_feature_totals_do_not_launch_browser_or_multiply_group_area(self):
         with patch("sourcing.sync_playwright") as browser:
-            result = source(DesignLayout.model_validate(layout(
+            result = source(SourceRequest(budget=1000, layout=DesignLayout.model_validate(layout(
                 element("Patio", "hardscape", 2), element("Pool", "hardscape", 1),
-                element("Outdoor bar", "hardscape", 2))))
+                element("Outdoor bar", "hardscape", 2)))))
         browser.assert_not_called()
         self.assertEqual(result["estimated_features_range_usd"], {"min": 55160, "max": 128500})
         self.assertEqual(result["sourced_materials_total_usd"], 0)
@@ -182,7 +182,7 @@ class BrowserTests(unittest.TestCase):
                 content_type="text/html", body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
             page.route("**/source", lambda route: route.fulfill(json=enriched))
             page.goto("http://yard.test/")
-            page.evaluate("value => { layout = value; designResults.hidden = false; }", original)
+            page.evaluate("value => { layout = value; designResults.hidden = false; document.querySelector('#budget').value = 1000; }", original)
             page.get_by_role("button", name="Source products").click()
             page.wait_for_function("document.querySelector('#source-totals').hidden === false")
             self.assertIn("$160.00–$500.00", page.locator("#features-total").inner_text())
@@ -206,7 +206,7 @@ class BrowserTests(unittest.TestCase):
                 body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
             page.route("**/source", lambda route: route.fulfill(json=enriched))
             page.goto("http://yard.test/")
-            page.evaluate("value => { layout = value; designResults.hidden = false; }", original)
+            page.evaluate("value => { layout = value; designResults.hidden = false; document.querySelector('#budget').value = 1000; }", original)
             page.get_by_role("button", name="Source products").click()
             page.wait_for_function("document.querySelector('#source-totals').hidden === false")
             self.assertIn("Amazon: $50.00", page.locator("#sourced-items").inner_text())

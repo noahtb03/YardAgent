@@ -52,29 +52,44 @@ FEATURE_COSTS = {
                   "https://www.angi.com/articles/how-much-does-it-cost-install-patio.htm"),
         "bar": (5000, 20000, "per installed outdoor bar",
                 "https://www.angi.com/articles/cost-outdoor-living-space.htm"),
+        "deck": (20, 45, "per sq ft of installed deck footprint",
+                 "https://www.angi.com/articles/cost-outdoor-living-space.htm"),
+        "fire_pit": (200, 3000, "per installed fire pit",
+                     "https://www.angi.com/articles/how-much-does-it-cost-install-fire-pit.htm"),
+        "other_hardscape": (1000, 20000, "per installed feature; provisional planning allowance, not a researched average; contractor quote required", ""),
     }
 }
 
 
 def feature_kind(element):
-    if element["category"] != "hardscape":
-        return None
     words = set(re.findall(r"[a-z]+", element["type"].lower()))
-    if re.search(r"\bpatio\s*$", element["type"], re.I):
-        return "patio"
+    if re.search(r"\b(retaining wall|pergola|gazebo|pavilion|driveway|walkway)\b", element["type"], re.I):
+        return "other_hardscape"
+    if re.search(r"\b(pool|patio|bar|deck)\s+with\b", element["type"], re.I):
+        return re.search(r"\b(pool|patio|bar|deck)\s+with\b", element["type"], re.I).group(1).lower()
+    if re.search(r"\b(patio|pool|bar|deck)\s*$", element["type"], re.I):
+        return re.search(r"\b(patio|pool|bar|deck)\s*$", element["type"], re.I).group(1).lower()
     # Materials and accessories containing 'patio', 'pool', or 'bar' are retail items.
     if words & {"paver", "pavers", "tile", "tiles", "stone", "stones", "sand",
                 "gravel", "material", "materials", "pump", "liner", "cover",
-                "stool", "stools", "chair", "chairs", "light", "lights"}:
+                "stool", "stools", "chair", "chairs", "table", "tables", "furniture", "light", "lights"}:
         return None
-    return next((kind for kind in ("pool", "patio", "bar") if kind in words), None)
+    if words & {"pool", "patio", "bar", "deck", "pergola", "gazebo", "pavilion", "wall", "driveway", "walkway"}:
+        return next((kind for kind in ("pool", "patio", "bar", "deck") if kind in words), "other_hardscape")
+    if element["category"] != "hardscape":
+        return None
+    if "fire" in words and "pit" in words:
+        return "fire_pit"
+    if words & {"brick", "bricks", "board", "boards", "lumber", "mulch", "edging"}:
+        return None
+    return "other_hardscape"
 
 
 def estimate_feature(element, kind):
     low, high, basis, url = FEATURE_COSTS["US-national"][kind]
     # Footprints already encompass all items: do not multiply patio area by quantity.
     units = (Decimal(str(element["width_ft"])) * Decimal(str(element["length_ft"]))
-             if kind == "patio" else Decimal(element["quantity"]))
+             if kind in {"patio", "deck"} else Decimal(element["quantity"]))
     return FeatureEstimate(cost_range_usd=CostRange(
         min=float((units * low).quantize(Decimal("0.01"))),
         max=float((units * high).quantize(Decimal("0.01")))),
@@ -361,7 +376,7 @@ Do not invent facts or claim to have visited the product page.""",
     return sorted(accepted, key=lambda product: (Decimal(str(product["price"])), product.get("retailer", ""), product["url"]))
 
 
-def source_layout(layout):
+def source_layout(layout, budget=None):
     enriched = {**layout, "elements": []}
     retail = []
     for element in layout["elements"]:
@@ -396,4 +411,21 @@ def source_layout(layout):
                          for item in enriched["elements"] if item["estimated_feature"]), Decimal(0)))
         for bound in ("min", "max")}
     enriched["sourcing_complete"] = all(item["sourcing_status"] == "sourced" for item in retail)
+    enriched["budget"] = budget
+    enriched["project_total_range_usd"] = {
+        bound: float(Decimal(str(enriched["sourced_materials_total_usd"])) +
+                     Decimal(str(enriched["estimated_features_range_usd"][bound])))
+        for bound in ("min", "max")}
+    total = enriched["project_total_range_usd"]
+    note = ""
+    if budget is not None:
+        if total["min"] > budget:
+            note = f"Over budget by ${total['min'] - budget:,.2f}–${total['max'] - budget:,.2f}."
+        elif total["max"] > budget:
+            note = f"May exceed budget by up to ${total['max'] - budget:,.2f}."
+        else:
+            note = "Priced items and estimated features are within budget."
+        if not enriched["sourcing_complete"]:
+            note += " Totals are partial: unpriced selected items are excluded; the final budget result is not yet known."
+    enriched["budget_note"] = note
     return enriched

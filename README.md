@@ -82,14 +82,17 @@ Width and length use feet; area uses square feet. The page shows reference
 assumptions, confidence, boundary assumptions, slope, features and limitations.
 The editable area input starts at the range midpoint; edits do not modify the
 original analysis JSON and disappear on reload.
-After analysis, enter a budget in USD and select **Generate design**. The page
-posts the original analysis, budget, and any area value to `/design`, then shows
+After analysis, enter a budget in USD and describe what you want. The Modern,
+Cottage, Desert, Tropical and Low-maintenance buttons append style preferences
+to the free-text box. Select **Generate design**. The page posts the original
+analysis, budget, `user_intent` (up to 4000 characters), and any area value to `/design`, then shows
 the layout elements in a table with quantities, positions, and dimensions,
-alongside the estimated cost, design notes, and warnings.
+alongside design notes and warnings. `/design` has no `estimated_cost_usd` field.
+The model honors requested features and style when choosing additions.
 
 `/design` returns a `warnings` array instead of rejecting a structurally valid
-proposal for budget or site constraints. Budget warnings include the dollar
-overrun. Elements are ordered from highest to lowest priority by the model;
+proposal for site constraints. Budget is guidance during design; comparison is
+deferred until sourcing. Elements are ordered from highest to lowest priority by the model;
 when footprint area is over the available area, the server drops additions from
 the end of that order until they fit. It reports the excess area and every drop.
 Misplaced footprints are moved inside the boundary when possible; oversized
@@ -99,9 +102,9 @@ Duplicate IDs are renamed. Missing yard dimensions use an explicit planning
 assumption from the available area/dimension (a 20 × 20 ft boundary when none are
 available). Existing bounds outside the yard produce warnings rather than rejection.
 
-After elements are dropped, the original estimated cost is retained with a warning
-because no per-element cost breakdown exists; sourcing recalculates the remaining
-materials total. Warnings carry through `/source` and `/render` inputs. The prompt
+The checklist starts with all proposed elements checked. Uncheck unwanted items
+before sourcing. Only checked items are submitted; changing the selection clears
+stale sourcing and rendering results. Warnings carry through `/source` and `/render` inputs. The prompt
 always requests a proposal, favoring fewer or cheaper additions for small yards or
 tight budgets. If all proposed additions must be removed, the response still
 returns a layout with an empty list and explanatory warnings. Malformed API data,
@@ -121,7 +124,10 @@ the current analysis and sends that exact file for editing. It returns `image_ur
 lighting. Older analysis JSON without that field falls back to its existing-feature
 and slope descriptions. The prompt uses each sourced product's actual name,
 quantity, X/Y position, and group footprint, preserving existing site features.
-Estimated features and unavailable products use their generic layout descriptions.
+Selected estimated installed features use their layout descriptions. Unpriced
+retail items are excluded from rendering. The editing prompt requires exact
+product type and quantity with no extra additions: four stake lights cannot be
+replaced by string lights. Image models can still make mistakes; inspect the result.
 
 The server calls `client.images.edit` in the
 [OpenAI Images API](https://developers.openai.com/api/docs/guides/image-generation)
@@ -150,8 +156,9 @@ such as an existing shed with warnings. Descriptive locations still require meas
 verify clearances; free-text feature matching is conservative, not a complete
 semantic inventory.
 
-Select **Source products** after generating a design. `POST /source` accepts the
-original `/design` JSON directly (up to 50 elements, with unique IDs). Retailer
+Select **Source products** after choosing items. `POST /source` accepts
+`{"layout": <design with only checked elements>, "budget": <USD number>}`
+(up to 50 elements, with unique IDs). Retailer
 searches use the browser; product-match confirmation requires `OPENAI_API_KEY`
 and uses `OPENAI_MODEL`. It returns these additional fields on each element:
 
@@ -181,8 +188,11 @@ inspection of the physical product; check details before purchasing.
 The response and page show `sourced_materials_total_usd` and
 `estimated_features_range_usd` separately. `sourcing_complete: false` means the
 materials subtotal excludes unpriced items; missing prices are not free products.
-The original `estimated_cost_usd` remains the design's planning estimate. Sourcing
-does not force actual prices under that estimate or the original budget.
+`project_total_range_usd` adds the sourced materials total to each end of the
+estimated-feature range. `budget_note` reports whether that range is over budget,
+may exceed it, or fits. Unpriced selected items make the comparison partial.
+There is no model-generated design price. The comparison excludes retail tax,
+delivery and installation; installed-feature costs remain estimates.
 
 Playwright navigates Home Depot, Lowe's, Wayfair, and Amazon in real Chromium
 browser pages, with one independent worker per retailer running in parallel.
@@ -228,6 +238,16 @@ deferred. The defaults, reviewed September 10, 2026, are:
 | Pool | $45,000–$88,000 | Per in-ground pool |
 | Patio | $8–$25/sq ft | Brick-paver patio, entire group footprint |
 | Outdoor bar | $5,000–$20,000 | Per installed bar |
+| Deck | $20–$45/sq ft | Entire installed footprint |
+| Installed fire pit | $200–$3,000 | Per feature |
+| Other installed hardscape | $1,000–$20,000 | Provisional allowance; not a researched average; contractor quote required |
+
+Pools, patios, bars, decks and other large construction features (including
+pergolas, gazebos and retaining walls) go to this table, never retailer search.
+The provisional catch-all is deliberately labeled in the output and has no source
+claim. Standalone materials such as patio pavers and boards may still be sourced.
+Deck rates use the outdoor living guide below; fire-pit rates use
+[Angi's fire-pit installation guide](https://www.angi.com/articles/how-much-does-it-cost-install-fire-pit.htm).
 
 Pool and bar allowances reference [Angi's outdoor living cost guide](https://www.angi.com/articles/cost-outdoor-living-space.htm).
 Patio allowances reference [Angi's patio installation guide](https://www.angi.com/articles/how-much-does-it-cost-install-patio.htm).

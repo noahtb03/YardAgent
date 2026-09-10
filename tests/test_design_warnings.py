@@ -19,18 +19,19 @@ def item(name, width=4, length=4, x=0, y=0):
 
 
 def layout(*items):
-    return DesignLayout.model_validate(dict(elements=list(items), estimated_cost_usd=150, notes=[]))
+    return DesignLayout.model_validate(dict(elements=list(items), notes=[]))
 
 
 class DesignWarningTests(unittest.TestCase):
-    def test_over_budget_returns_200_with_warning(self):
+    def test_design_has_no_cost_or_budget_evaluation(self):
         with patch.dict("os.environ", OPENAI_API_KEY="test"), patch("main.OpenAI") as api, TestClient(app) as client:
             api.return_value.__enter__.return_value.responses.parse.return_value = SimpleNamespace(
                 status="completed", output_parsed=layout(item("Rose")))
             response = client.post("/design", json=request().model_dump())
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.json()["elements"]), 1)
-        self.assertTrue(any("by $50.00" in warning for warning in response.json()["warnings"]))
+        self.assertNotIn("estimated_cost_usd", response.json())
+        self.assertFalse(any("budget" in warning for warning in response.json()["warnings"]))
 
     def test_area_drops_lowest_priority_and_preserves_original(self):
         original = layout(item("Rose"), item("Fern", x=5))

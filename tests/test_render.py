@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import httpx
 from fastapi.testclient import TestClient
+from fastapi import HTTPException
 from openai import APITimeoutError, RateLimitError
 from PIL import Image
 from playwright.sync_api import sync_playwright
@@ -26,7 +27,7 @@ def payload():
             sourced_product=dict(name="Hampton Bay Cedar Adirondack Chair", price=99,
                 url="https://www.homedepot.com/p/chair/123"), estimated_feature=None,
             sourcing_status="sourced", sourcing_note=None, sourced_total_usd=198)],
-            estimated_cost_usd=250, notes=[], sourced_materials_total_usd=198,
+            notes=[], sourced_materials_total_usd=198,
             estimated_features_range_usd=dict(min=0, max=0), sourcing_complete=True))
 
 
@@ -51,10 +52,9 @@ class RenderTests(unittest.TestCase):
         del data["analysis"]["photo_description"]
         item = data["layout"]["elements"][0]
         item.update(sourced_product=None, sourcing_status="unavailable", sourced_total_usd=None)
-        prompt = build_render_prompt(RenderRequest.model_validate(data))
-        self.assertIn("generic concept; no sourced product", prompt)
-        self.assertIn("other visual details are unknown", prompt)
-        self.assertNotIn("Hampton Bay", prompt)
+        with self.assertRaises(HTTPException) as error:
+            build_render_prompt(RenderRequest.model_validate(data))
+        self.assertEqual(error.exception.status_code, 422)
 
     def test_render_endpoint_returns_real_api_image_bytes(self):
         encoded = base64.b64encode(png()).decode()
@@ -117,9 +117,18 @@ class RenderBrowserTests(unittest.TestCase):
                 page.route("http://yard.test/", lambda route: route.fulfill(content_type="text/html",
                     body=(Path(__file__).parents[1] / "static/index.html").read_text(encoding="utf-8")))
                 page.route("**/analyze", lambda route: route.fulfill(json=data["analysis"]))
-                design = {key: data["layout"][key] for key in ("elements", "estimated_cost_usd", "notes")}
-                page.route("**/design", lambda route: route.fulfill(json=design))
-                page.route("**/source", lambda route: route.fulfill(json=data["layout"]))
+                design = {key: data["layout"][key] for key in ("elements", "notes")}
+                design = {**design, "elements": [*design["elements"], {**design["elements"][0], "id": "extra", "type": "Extra chair"}]}
+                design_requests = []
+                source_requests = []
+                def design_route(route):
+                    design_requests.append(route.request.post_data_json)
+                    route.fulfill(json=design)
+                def source_route(route):
+                    source_requests.append(route.request.post_data_json)
+                    route.fulfill(json=data["layout"])
+                page.route("**/design", design_route)
+                page.route("**/source", source_route)
                 render_requests = []
                 def render_route(route):
                     render_requests.append(route.request.post_data_json)
@@ -132,7 +141,10 @@ class RenderBrowserTests(unittest.TestCase):
                 page.locator("#photo").set_input_files(dict(name="yard.png", mimeType="image/png", buffer=png()))
                 page.get_by_role("button", name="Analyze photo").click()
                 page.locator("#budget").fill("500")
+                page.locator("#user-intent").fill("I want a pool and a fire pit")
+                page.get_by_role("button", name="Modern", exact=True).click()
                 page.get_by_role("button", name="Generate design").click()
+                page.locator('input[data-element-id="extra"]').uncheck()
                 page.get_by_role("button", name="Source products").click()
                 # A changed file picker must not substitute a different photo
                 # for the image that produced the current analysis/layout.
@@ -143,6 +155,9 @@ class RenderBrowserTests(unittest.TestCase):
                 page.get_by_role("button", name="Render redesigned yard").click()
                 page.wait_for_function("document.querySelector('#render-results').hidden === false")
                 self.assertEqual(render_requests[-1], data)
+                self.assertEqual(design_requests[0]["user_intent"], "I want a pool and a fire pit. Modern style")
+                self.assertEqual([item["id"] for item in source_requests[0]["layout"]["elements"]], ["chair"])
+                self.assertEqual(source_requests[0]["budget"], 500)
                 self.assertTrue(page.locator("#original-photo").get_attribute("src").startswith("blob:"))
                 original = page.locator("#original-photo").bounding_box()
                 rendered = page.locator("#rendered-photo").bounding_box()

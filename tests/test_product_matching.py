@@ -47,6 +47,6 @@ class ProductMatchingTests(unittest.TestCase):
         candidates = [product("Oak ornament", 5), product("Live oak", 30), product("Live oak 3 gallon", 40)]
         with patch("sourcing.search_all_retailers", return_value={"Oak tree": candidates}), \
                 patch("sourcing.confirm_products", return_value=candidates[1:]):
-            result = source_layout(dict(elements=[item], estimated_cost_usd=100, notes=[]))
+            result = source_layout(dict(elements=[item], notes=[]))
         self.assertEqual(result["sourced_materials_total_usd"], 60)
         self.assertEqual(result["elements"][0]["alternative_products"], [candidates[2]])
